@@ -1,0 +1,463 @@
+{
+  "entities": {
+    "BusinessCategory": {
+      "title": "BusinessCategory",
+      "description": "A category for businesses (e.g., Restaurant, Market)",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "icon": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "order": { "type": "number" },
+        "active": { "type": "boolean" }
+      },
+      "required": ["name", "active"]
+    },
+    "Restaurant": {
+      "title": "Restaurant",
+      "description": "A restaurant registered in the platform",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "status": { "type": "string" },
+        "modality": { "type": "string", "description": "The business category name" },
+        "ownerUid": { "type": "string" },
+        "whatsapp": { "type": "string" },
+        "openingHours": { "type": "string" },
+        "closingHours": { "type": "string" },
+        "weeklyHours": { "type": "object", "description": "Structured weekly opening hours" },
+        "activityExpiresAt": { "type": "string", "format": "date-time" },
+        "forceClosed": { "type": "boolean", "default": false },
+        "isFamous": { "type": "boolean" },
+        "pixConfigType": { "type": "string" },
+        "pixKey": { "type": "string" },
+        "pixType": { "type": "string" },
+        "autoVolume": { "type": "boolean" },
+        "screenOverlay": { "type": "boolean" },
+        "acceptedPaymentMethods": { "type": "array", "items": { "type": "string" } },
+        "likesCount": { "type": "number", "default": 0 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "ownerUid", "status"]
+    },
+    "FoodItem": {
+      "title": "FoodItem",
+      "description": "A product offered by a restaurant",
+      "type": "object",
+      "properties": {
+        "restaurantId": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "price": { "type": "number" },
+        "category": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "available": { "type": "boolean" },
+        "availability": {
+          "type": "object",
+          "description": "Weekly availability schedule for the product",
+          "properties": {
+            "monday": { "type": "object", "properties": { "active": { "type": "boolean" }, "startTime": { "type": "string" }, "endTime": { "type": "string" } } },
+            "tuesday": { "type": "object", "properties": { "active": { "type": "boolean" }, "startTime": { "type": "string" }, "endTime": { "type": "string" } } },
+            "wednesday": { "type": "object", "properties": { "active": { "type": "boolean" }, "startTime": { "type": "string" }, "endTime": { "type": "string" } } },
+            "thursday": { "type": "object", "properties": { "active": { "type": "boolean" }, "startTime": { "type": "string" }, "endTime": { "type": "string" } } },
+            "friday": { "type": "object", "properties": { "active": { "type": "boolean" }, "startTime": { "type": "string" }, "endTime": { "type": "string" } } },
+            "saturday": { "type": "object", "properties": { "active": { "type": "boolean" }, "startTime": { "type": "string" }, "endTime": { "type": "string" } } },
+            "sunday": { "type": "object", "properties": { "active": { "type": "boolean" }, "startTime": { "type": "string" }, "endTime": { "type": "string" } } }
+          }
+        },
+        "orderCount": { "type": "number", "description": "Number of times this item has been ordered" },
+        "likesCount": { "type": "number", "default": 0 }
+      },
+      "required": ["restaurantId", "name", "price"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "A customer order",
+      "type": "object",
+      "properties": {
+        "restaurantId": { "type": "string" },
+        "customerUid": { "type": "string" },
+        "customerName": { "type": "string" },
+        "total": { "type": "number" },
+        "status": { "type": "string" },
+        "deliveryAddress": { "type": "string" },
+        "courierUid": { "type": "string" },
+        "courierName": { "type": "string" },
+        "courierPhoto": { "type": "string" },
+        "courierPlate": { "type": "string" },
+        "courierVehicle": { "type": "string" },
+        "courierColor": { "type": "string" },
+        "deliveryEstimation": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["restaurantId", "customerUid", "total", "status"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile information",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "role": { "type": "string" },
+        "cpf": { "type": "string" },
+        "phone": { "type": "string" },
+        "subscriptionStatus": { "type": "string" }
+      },
+      "required": ["email", "role"]
+    },
+    "GlobalSettings": {
+      "title": "GlobalSettings",
+      "description": "Global application settings",
+      "type": "object",
+      "properties": {
+        "appName": { "type": "string" },
+        "splashScreenDuration": { "type": "number" },
+        "monthlyFee": { "type": "number" },
+        "splitPayEnabled": { "type": "boolean" },
+        "maintenanceMode": { "type": "boolean" },
+        "maintenanceMessage": { "type": "string" },
+        "maintenanceImageUrl": { "type": "string" },
+        "globalTheme": {
+          "type": "object",
+          "properties": {
+            "primaryColor": { "type": "string" },
+            "secondaryColor": { "type": "string" },
+            "isGradient": { "type": "boolean" }
+          }
+        },
+        "clientIcons": {
+          "type": "object",
+          "properties": {
+            "size": { "type": "number" },
+            "spacing": { "type": "number" },
+            "colorIcon": { "type": "string" },
+            "filterIcon": { "type": "string" },
+            "ordersIcon": { "type": "string" },
+            "cartIcon": { "type": "string" }
+          }
+        },
+        "defaultOrderSoundUrl": { "type": "string" },
+        "categoryDisplayConfig": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "schedules": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "startTime": { "type": "string" },
+                    "endTime": { "type": "string" },
+                    "phrase": { "type": "string" },
+                    "rankingCriteria": { "type": "string", "enum": ["orders", "rating"] }
+                  },
+                  "required": ["startTime", "endTime", "phrase", "rankingCriteria"]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "Review": {
+      "title": "Review",
+      "description": "A customer review for a restaurant",
+      "type": "object",
+      "properties": {
+        "restaurantId": { "type": "string" },
+        "customerUid": { "type": "string" },
+        "customerName": { "type": "string" },
+        "rating": { "type": "number" },
+        "comment": { "type": "string" },
+        "likesCount": { "type": "number", "default": 0 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["restaurantId", "customerUid", "rating"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "A chat message",
+      "type": "object",
+      "properties": {
+        "text": { "type": "string" },
+        "senderUid": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["text", "senderUid"]
+    },
+    "Printer": {
+      "title": "Printer",
+      "description": "A thermal printer configuration",
+      "type": "object",
+      "properties": {
+        "restaurantId": { "type": "string" },
+        "name": { "type": "string" },
+        "type": { "type": "string", "enum": ["escpos"] },
+        "connection": { "type": "string", "enum": ["network", "usb", "bluetooth"] },
+        "ip": { "type": "string" },
+        "port": { "type": "number" },
+        "paperSize": { "type": "string", "enum": ["58mm", "80mm"] },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["restaurantId", "name", "type", "connection"]
+    },
+    "PromotionalBanner": {
+      "title": "PromotionalBanner",
+      "description": "A banner displayed on the home screen",
+      "type": "object",
+      "properties": {
+        "imageUrl": { "type": "string" },
+        "link": { "type": "string" },
+        "active": { "type": "boolean" },
+        "order": { "type": "number" },
+        "cities": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["imageUrl", "active"]
+    },
+    "MarketingPopup": {
+      "title": "MarketingPopup",
+      "description": "A popup displayed to users",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "active": { "type": "boolean" },
+        "buttonText": { "type": "string" },
+        "buttonLink": { "type": "string" }
+      },
+      "required": ["title", "active"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "A food category",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "icon": { "type": "string" },
+        "order": { "type": "number" },
+        "active": { "type": "boolean" }
+      },
+      "required": ["name", "active"]
+    },
+    "PageView": {
+      "title": "PageView",
+      "description": "A record of a page view",
+      "type": "object",
+      "properties": {
+        "timestamp": { "type": "string", "format": "date-time" },
+        "userAgent": { "type": "string" },
+        "path": { "type": "string" }
+      },
+      "required": ["timestamp"]
+    },
+    "CPF": {
+      "title": "CPF",
+      "description": "A record of a registered CPF to prevent duplicates",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" }
+      },
+      "required": ["uid"]
+    },
+    "Ride": {
+      "title": "Ride",
+      "description": "A delivery ride request",
+      "type": "object",
+      "properties": {
+        "restaurantId": { "type": "string" },
+        "restaurantName": { "type": "string" },
+        "destinations": { "type": "array" },
+        "vehicleType": { "type": "string" },
+        "status": { "type": "string" },
+        "courierUid": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["restaurantId", "status", "createdAt"]
+    },
+    "Wallet": {
+      "title": "Wallet",
+      "description": "User digital wallet",
+      "type": "object",
+      "properties": {
+        "ownerUid": { "type": "string" },
+        "balance": { "type": "number" }
+      },
+      "required": ["ownerUid", "balance"]
+    },
+    "WalletTransaction": {
+      "title": "WalletTransaction",
+      "description": "A transaction in a user's wallet",
+      "type": "object",
+      "properties": {
+        "ownerUid": { "type": "string" },
+        "amount": { "type": "number" },
+        "type": { "type": "string" },
+        "description": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerUid", "amount", "type", "createdAt"]
+    },
+    "CategorySchedule": {
+      "title": "CategorySchedule",
+      "description": "A schedule for a category",
+      "type": "object",
+      "properties": {
+        "categoryId": { "type": "string" },
+        "startTime": { "type": "string" },
+        "endTime": { "type": "string" },
+        "active": { "type": "boolean" }
+      },
+      "required": ["categoryId", "startTime", "endTime", "active"]
+    },
+    "SplitPayHistory": {
+      "title": "SplitPayHistory",
+      "description": "A record of a split payment",
+      "type": "object",
+      "properties": {
+        "orderId": { "type": "string" },
+        "amount": { "type": "number" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orderId", "amount", "status", "createdAt"]
+    },
+    "PixPayment": {
+      "title": "PixPayment",
+      "description": "A record of a PIX payment",
+      "type": "object",
+      "properties": {
+        "orderId": { "type": "string" },
+        "amount": { "type": "number" },
+        "status": { "type": "string" },
+        "pixKey": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orderId", "amount", "status", "pixKey", "createdAt"]
+    },
+    "City": {
+      "title": "City",
+      "description": "A city served by the platform",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "apiUrl": { "type": "string" },
+        "apiKey": { "type": "string" },
+        "authEmail": { "type": "string" },
+        "authPassword": { "type": "string" },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "usar_localizacao": { "type": "boolean" },
+        "cidade": { "type": "string" },
+        "endereco": { "type": "string" },
+        "bairro": { "type": "string" },
+        "estado": { "type": "string" },
+        "status": { "type": "string" },
+        "lastChecked": { "type": "string", "format": "date-time" },
+        "categories": { "type": "array" },
+        "categoriesLastUpdated": { "type": "string", "format": "date-time" },
+        "active": { "type": "boolean" }
+      },
+      "required": ["name", "active"]
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "A generic payment record",
+      "type": "object",
+      "properties": {
+        "orderId": { "type": "string" },
+        "amount": { "type": "number" },
+        "method": { "type": "string" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orderId", "amount", "method", "status", "createdAt"]
+    },
+    "AdminLog": {
+      "title": "AdminLog",
+      "description": "A log of an administrative action",
+      "type": "object",
+      "properties": {
+        "adminUid": { "type": "string" },
+        "action": { "type": "string" },
+        "details": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["adminUid", "action", "timestamp"]
+    },
+    "PushNotification": {
+      "title": "PushNotification",
+      "description": "A push notification sent to users",
+      "type": "object",
+      "properties": {
+        "message": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "sentBy": { "type": "string" },
+        "type": { "type": "string", "enum": ["broadcast", "individual"] }
+      },
+      "required": ["message", "createdAt", "sentBy", "type"]
+    },
+    "Branch": {
+      "title": "Branch",
+      "description": "A business branch associated with a city",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "cityId": { "type": "string" },
+        "cityName": { "type": "string" },
+        "recargas_pix": { "type": "number" },
+        "recargas_manuais": { "type": "number" },
+        "ganhos_gerais": { "type": "number" },
+        "faturamento_hoje": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "cityId", "cityName", "createdAt"]
+    },
+    "Like": {
+      "title": "Like",
+      "description": "A like given by a user to an item",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "itemId": { "type": "string" },
+        "itemType": { "type": "string", "enum": ["restaurant", "product", "review"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "itemId", "itemType", "createdAt"]
+    }
+  },
+  "firestore": {
+    "restaurants": { "schema": "Restaurant", "description": "List of restaurants" },
+    "food_items": { "schema": "FoodItem", "description": "Menu items" },
+    "orders": { "schema": "Order", "description": "Customer orders" },
+    "orders/{orderId}/messages": { "schema": "Message", "description": "Chat messages for an order" },
+    "users": { "schema": "UserProfile", "description": "User accounts" },
+    "settings": { "schema": "GlobalSettings", "description": "Global settings" },
+    "reviews": { "schema": "Review", "description": "Customer reviews" },
+    "likes": { "schema": "Like", "description": "User likes" },
+    "printers": { "schema": "Printer", "description": "Restaurant printers" },
+    "promotional_banners": { "schema": "PromotionalBanner", "description": "Home screen banners" },
+    "marketing_popups": { "schema": "MarketingPopup", "description": "Marketing popups" },
+    "categories": { "schema": "Category", "description": "Food categories" },
+    "page_views": { "schema": "PageView", "description": "Page view analytics" },
+    "cpfs": { "schema": "CPF", "description": "Index of registered CPFs" },
+    "rides": { "schema": "Ride", "description": "Delivery rides" },
+    "wallets": { "schema": "Wallet", "description": "User wallets" },
+    "wallet_transactions": { "schema": "WalletTransaction", "description": "Wallet transactions" },
+    "category_schedules": { "schema": "CategorySchedule", "description": "Category schedules" },
+    "splitpay_history": { "schema": "SplitPayHistory", "description": "Split payment history" },
+    "pix_payments": { "schema": "PixPayment", "description": "PIX payments" },
+    "table_actions": { "schema": "object", "description": "Actions performed on tables" },
+    "cities": { "schema": "City", "description": "Cities" },
+    "payments": { "schema": "Payment", "description": "Generic payments" },
+    "admin_logs": { "schema": "AdminLog", "description": "Admin logs" },
+    "push_notifications": { "schema": "PushNotification", "description": "Push notifications" },
+    "branches": { "schema": "Branch", "description": "Business branches" },
+    "business_categories": { "schema": "BusinessCategory", "description": "Business categories (modalities)" }
+  }
+}

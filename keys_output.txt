@@ -1,0 +1,154 @@
+src/components/CourierView.tsx:                        {activeRide.destinations.map((dest, idx) => (
+src/components/CourierView.tsx:                          <div key={dest.orderId || idx} className="bg-white/10 p-3 rounded-xl flex items-center justify-between">
+src/components/CourierView.tsx:                    {rides.map((ride, idx) => (
+src/components/CourierView.tsx:                        key={`${ride.id}-${idx}`}
+src/components/CourierView.tsx:                    {rideHistory.map((ride, idx) => (
+src/components/CourierView.tsx:                      <div key={`${ride.id}-${idx}`} className="bg-white rounded-2xl p-4 border border-slate-100 flex items-center justify-between">
+src/components/ManagerView.tsx:                    {steps.map((step, idx) => (
+src/components/ManagerView.tsx:                      <div key={`tutorial-step-${idx}`} className="w-full flex-shrink-0 space-y-8">
+src/components/ManagerView.tsx:                    {steps.map((_, idx) => (
+src/components/ManagerView.tsx:                        key={`tutorial-dot-${idx}`}
+src/components/ManagerView.tsx:                        className={`h-1.5 rounded-full transition-all duration-300 ${idx === currentStep ? 'w-8 bg-blue-600' : 'w-2 bg-slate-200 dark:bg-slate-800'}`}
+src/components/ManagerView.tsx:                {foodItems.filter(item => item.highlightUntil && item.highlightUntil.toDate() > new Date(Date.now() - 600000)).map((item, idx) => {
+src/components/ManagerView.tsx:                      key={`highlight-item-${item.id}-${idx}`}
+src/components/ManagerView.tsx:                .map((item, idx) => (
+src/components/ManagerView.tsx:                <div key={`menu-item-${item.id}-${idx}`} className="bg-white rounded-[2rem] p-4 flex space-x-4 shadow-sm border border-slate-100 group hover:shadow-xl hover:shadow-blue-500/5 transition-all">
+src/components/ManagerView.tsx:                                {order.assignedEmployees.map((emp, idx) => (
+src/components/ManagerView.tsx:                                    key={`${order.id}-emp-${idx}`}
+src/components/ManagerView.tsx:                            {order.items.map((item: any, idx: number) => (
+src/components/ManagerView.tsx:                              <div key={`${order.id}-item-${idx}`} className="flex flex-col p-2 bg-white rounded-lg border border-slate-100">
+src/components/ManagerView.tsx:                      manualOrderItems.map((item, idx) => (
+src/components/ManagerView.tsx:                        <div key={`manual-order-item-${item.id}-${idx}`} className="flex items-center justify-between bg-white p-3 rounded-xl shadow-sm">
+src/components/CustomerView.tsx:    const newItems = order.items.filter((_: any, idx: number) => idx !== itemIdx);
+src/components/CustomerView.tsx:                  {filteredRestaurants.slice(0, 3).map((restaurant, idx) => (
+src/components/CustomerView.tsx:                      key={`${restaurant.id}-${idx}`}
+src/components/CustomerView.tsx:                      }).map((item, idx) => (
+src/components/CustomerView.tsx:                          key={`${item.id}-${idx}`}
+src/components/CustomerView.tsx:                      (Array.from(new Map(cityRestaurants.filter(r => r.isFamous || parseFloat(getAverageRating(r.id, false, r.rating).rating) >= 5.0).map(r => [r.id, r])).values()) as Restaurant[]).map((restaurant, idx) => (
+src/components/CustomerView.tsx:                          key={`${restaurant.id}-${idx}`}
+src/components/CustomerView.tsx:                          {cityBanners.map((_, idx) => (
+src/components/CustomerView.tsx:                              key={`banner-dot-${idx}`}
+src/components/CustomerView.tsx:                              onClick={() => setCurrentBannerIndex(idx)}
+src/components/CustomerView.tsx:                              className={`w-2 h-2 rounded-full transition-all ${idx === currentBannerIndex ? 'bg-white w-6' : 'bg-white/40'}`}
+src/components/CustomerView.tsx:                        {(Array.from(new Map(filteredRestaurants.map(r => [r.id, r])).values()) as Restaurant[]).map((restaurant, idx) => {
+src/components/CustomerView.tsx:                            <SortableItem key={`${restaurant.id}-${idx}`} id={restaurant.id} type="restaurant" disabled={!adminMode}>
+src/components/CustomerView.tsx:                        {filteredRestaurantMenu.map((item, idx) => (
+src/components/CustomerView.tsx:                            key={`${item.id}-${idx}`}
+src/components/CustomerView.tsx:                          {cart.map((item, idx) => (
+src/components/CustomerView.tsx:                            <div key={`${item.id}-${idx}-${JSON.stringify(item.selectedAddOns || [])}`} className="flex items-center space-x-3 group">
+src/components/CustomerView.tsx:                            {recentProducts.map((product, idx) => (
+src/components/CustomerView.tsx:                                key={`${product.id}-${idx}`}
+src/components/CustomerView.tsx:                                transition={{ delay: idx * 0.05 }}
+src/components/CustomerView.tsx:                                  {res.items.map((item: any, idx: number) => (
+src/components/CustomerView.tsx:                                    <div key={`${res.id}-item-${idx}`} className="flex items-center space-x-4 bg-slate-50/50 p-4 rounded-[2rem] border border-slate-100 group hover:bg-white hover:shadow-lg transition-all">
+src/components/CustomerView.tsx:                        .map(r => [r.id, r])).values()) as Restaurant[]).map((restaurant, idx) => {
+src/components/CustomerView.tsx:                              key={`${restaurant.id}-${idx}`}
+src/components/CustomerView.tsx:                        {orderToReview.items.map((item: any, idx: number) => (
+src/components/CustomerView.tsx:                          <div key={`${item.id}-${idx}`} className="space-y-3 p-4 bg-slate-50 rounded-2xl">
+src/components/CustomerView.tsx:                    {Array.from(new Set(['Todos', ...filteredCategories.map(c => c.name)])).map((cat, idx) => (
+src/components/CustomerView.tsx:                        key={`cat-filter-${cat}-${idx}`}
+src/components/CustomerView.tsx:                    {uniqueRestaurantsInCart.map((restaurant, idx) => (
+src/components/CustomerView.tsx:                        key={`${restaurant.id}-${idx}`} 
+src/components/CustomerView.tsx:                    {cart.map((item, idx) => {
+src/components/CustomerView.tsx:                        <div key={`${item.id}-${idx}-${JSON.stringify(item.selectedAddOns || [])}`} className="flex-shrink-0 relative group">
+src/components/CustomerView.tsx:                        {uniqueRestaurantsInCart.map((restaurant, idx) => (
+src/components/CustomerView.tsx:                            key={`${restaurant.id}-${idx}`} 
+src/components/CustomerView.tsx:                      {cart.map((item, idx) => {
+src/components/CustomerView.tsx:                          <div key={`${item.id}-${idx}-${JSON.stringify(item.selectedAddOns || [])}`} className="flex items-center space-x-4 p-4 bg-slate-50/50 rounded-3xl border border-slate-100/50">
+src/components/CustomerView.tsx:                      {cartSuggestions.map((p, idx) => {
+src/components/CustomerView.tsx:                            key={`${p.id}-${idx}`}
+src/components/CustomerView.tsx:                  {featuredProducts.map((item, idx) => (
+src/components/CustomerView.tsx:                      key={`${item.id}-${idx}`}
+src/components/CustomerView.tsx:                  {activeOrders.find(o => o.id === editingOrderId)?.items.map((item: any, idx: number) => (
+src/components/CustomerView.tsx:                    <div key={`${editingOrderId}-edit-item-${idx}`} className="flex items-center justify-between bg-slate-50 p-4 rounded-2xl border border-slate-100">
+src/components/CustomerView.tsx:                            onClick={() => handleUpdateOrderItem(editingOrderId, idx, -1)}
+src/components/CustomerView.tsx:                            onClick={() => handleUpdateOrderItem(editingOrderId, idx, 1)}
+src/components/CustomerView.tsx:                          onClick={() => handleRemoveOrderItem(editingOrderId, idx)}
+src/components/StoreFront.tsx:                  {foodItems.filter(item => (item.category || 'Geral') === category).map((item, idx) => (
+src/components/StoreFront.tsx:                      key={`${item.id}-${idx}`}
+src/components/GalleryModal.tsx:              {GALLERY_IMAGES.map((url, idx) => (
+src/components/AdminView.tsx:          {validItems.map((item, idx) => (
+src/components/AdminView.tsx:              key={`${item.id}-${idx}`} 
+src/components/AdminView.tsx:              ].map((item, idx) => (
+src/components/AdminView.tsx:                  key={`${item.id}-${idx}`}
+src/components/AdminView.tsx:                {restaurants.map((res, idx) => (
+src/components/AdminView.tsx:                  <option key={`${res.id}-${idx}`} value={res.id}>{res.name}</option>
+src/components/AdminView.tsx:                  {displayedOrders.map((order, idx) => {
+src/components/AdminView.tsx:                    <div key={`${order.id}-${idx}`} className="bg-white/5 border border-white/10 rounded-3xl p-6 hover:bg-white/10 transition-all group">
+src/components/AdminView.tsx:                          {selectedOrder.items?.map((item: any, idx: number) => (
+src/components/AdminView.tsx:                            <tr key={`${selectedOrder.id}-item-${idx}`} className="hover:bg-white/5 transition-colors">
+src/components/AdminView.tsx:                    {categories.map((cat, idx) => (
+src/components/AdminView.tsx:                        key={`${cat.id}-${idx}`}
+src/components/AdminView.tsx:                        {uniqueCities.map((city, idx) => (
+src/components/AdminView.tsx:                          <option key={`city-opt-1-${city.id}-${idx}`} value={city.id}>{city.name}</option>
+src/components/AdminView.tsx:              {displayedPartners.map((partner, idx) => {
+src/components/AdminView.tsx:                    key={`${partner.id}-${idx}`}
+src/components/AdminView.tsx:                        {businessCategories.map((cat, idx) => (
+src/components/AdminView.tsx:                          <option key={`${cat.id}-${idx}`} value={cat.name}>{cat.name}</option>
+src/components/AdminView.tsx:                          {uniqueCities.map((city, idx) => (
+src/components/AdminView.tsx:                            <option key={`${city.id}-${idx}`} value={city.name}>{city.name}</option>
+src/components/AdminView.tsx:                          {partners.map((partner, idx) => (
+src/components/AdminView.tsx:                            <option key={`${partner.id}-${idx}`} value={partner.id}>{partner.name}</option>
+src/components/AdminView.tsx:                    {(Object.keys(weeklyHours) as Array<keyof WeeklyHours>).map((day, idx) => (
+src/components/AdminView.tsx:                      <div key={`weekly-hour-${day}-${idx}`} className="bg-white/5 p-4 rounded-2xl border border-white/5 space-y-3">
+src/components/AdminView.tsx:              {displayedRestaurants.map((res, idx) => {
+src/components/AdminView.tsx:                  <div key={`res-list-1-${res.id}-${idx}`} className="bg-white/5 border border-white/10 p-6 rounded-2xl flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4 group hover:bg-white/10 transition-all">
+src/components/AdminView.tsx:                    {Array.from(new Set(bannerCities)).map((city, idx) => (
+src/components/AdminView.tsx:                      <span key={`banner-city-${city}-${idx}`} className="bg-blue-500/20 text-blue-400 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-2">
+src/components/AdminView.tsx:                      {uniqueCities.map((city, idx) => (
+src/components/AdminView.tsx:                        <option key={`${city.id}-${idx}`} value={city.name}>{city.name}</option>
+src/components/AdminView.tsx:              {displayedBanners.map((banner, idx) => (
+src/components/AdminView.tsx:                <div key={`${banner.id}-${idx}`} className="bg-white/5 border border-white/10 rounded-3xl overflow-hidden group">
+src/components/AdminView.tsx:                        {Array.from(new Set(banner.cities || [])).map((city, idx) => (
+src/components/AdminView.tsx:                          <span key={`banner-list-city-${city}-${idx}`} className="bg-white/10 text-[8px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full opacity-60">
+src/components/AdminView.tsx:                    {uniqueCities.map((c, idx) => <option key={`${c.id}-${idx}`} value={c.name}>{c.name}</option>)}
+src/components/AdminView.tsx:                {getCityRevenue().map(({ city, amount }, idx) => (
+src/components/AdminView.tsx:                  <div key={`city-revenue-${city}-${idx}`} className="bg-white/5 p-6 rounded-3xl border border-white/10 space-y-2">
+src/components/AdminView.tsx:                      {filteredManagers.map((u, idx) => (
+src/components/AdminView.tsx:                        <tr key={`${u.uid}-${idx}`} className="border-b border-white/5 hover:bg-white/5 transition-colors">
+src/components/AdminView.tsx:                        {restaurants.map((res, idx) => (
+src/components/AdminView.tsx:                          <tr key={`${res.id}-${idx}`} className="border-b border-white/5 hover:bg-white/5 transition-colors">
+src/components/AdminView.tsx:                    adminLogs.map((log, idx) => (
+src/components/AdminView.tsx:                      <div key={`admin-log-item-${log.id || idx}-${idx}`} className="flex items-center justify-between p-3 bg-slate-50 rounded-xl">
+src/components/AdminView.tsx:                              {categories.map((c, idx) => (
+src/components/AdminView.tsx:                                <option key={`${c.id}-${idx}`} value={c.id}>{c.name}</option>
+src/components/AdminView.tsx:                      {categories.map((cat, idx) => (
+src/components/AdminView.tsx:                        <div key={`${cat.id}-${idx}`} className="p-4 bg-white/5 rounded-2xl border border-white/5 space-y-4">
+src/components/AdminView.tsx:                            {(settings.categoryDisplayConfig?.[cat.id]?.schedules || []).map((schedule: any, idx: number) => (
+src/components/AdminView.tsx:                              <div key={`${cat.id}-schedule-${idx}`} className="bg-white/5 border border-white/10 rounded-2xl p-4 space-y-4 relative group/schedule">
+src/components/AdminView.tsx:                                    schedules.splice(idx, 1);
+src/components/AdminView.tsx:                                        schedules[idx] = { ...schedules[idx], startTime: e.target.value };
+src/components/AdminView.tsx:                                        schedules[idx] = { ...schedules[idx], endTime: e.target.value };
+src/components/AdminView.tsx:                                        schedules[idx] = { ...schedules[idx], phrase: e.target.value };
+src/components/AdminView.tsx:                                          schedules[idx] = { ...schedules[idx], rankingCriteria: opt.id };
+src/components/AdminView.tsx:              ].map((stat, idx) => (
+src/components/AdminView.tsx:                  {displayedRealTimeOrders.map((order, idx) => {
+src/components/AdminView.tsx:                      <div key={`${order.id}-${idx}`} className="bg-white/5 p-4 rounded-2xl border border-white/5 space-y-3">
+src/components/AdminView.tsx:                    {(Array.from(new Map(allOrders.filter(o => ['delivered', 'completed', 'cancelled'].includes(o.status) && new Date(o.createdAt?.seconds ? o.createdAt.seconds * 1000 : o.createdAt).toDateString() === new Date().toDateString()).sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)).map(o => [o.id, o])).values()) as Order[]).map((order, idx) => {
+src/components/AdminView.tsx:                        <div key={`${order.id}-${idx}`} className={`p-4 rounded-2xl border ${isCancelled ? 'bg-red-500/5 border-red-500/10' : 'bg-emerald-500/5 border-emerald-500/10'} space-y-3`}>
+src/components/AdminView.tsx:                  {categories.slice(0, categoriesLimit).map((cat, idx) => (
+src/components/AdminView.tsx:                    <div key={`${cat.id}-${idx}`} className="bg-white/5 border border-white/10 rounded-[2rem] overflow-hidden group hover:border-blue-500/30 transition-all">
+src/components/AdminView.tsx:                  {businessCategories.slice(0, businessCategoriesLimit).map((cat, idx) => (
+src/components/AdminView.tsx:                    <div key={`${cat.id}-${idx}`} className="bg-white/5 border border-white/10 rounded-[2rem] overflow-hidden group hover:border-blue-500/30 transition-all">
+src/components/AdminView.tsx:                  {restaurants.map((res, idx) => (
+src/components/AdminView.tsx:                    <div key={`res-list-2-${res.id}-${idx}`} className="bg-white/5 border border-white/10 p-6 rounded-2xl flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4 group hover:bg-white/10 transition-all">
+src/components/AdminView.tsx:              {displayedUsers.map((u, idx) => (
+src/components/AdminView.tsx:                <div key={`${u.uid}-${idx}`} className="bg-white/5 p-6 rounded-[2rem] border border-white/10 space-y-4 hover:border-blue-500/30 transition-all group">
+src/components/AdminView.tsx:                      {(Array.from(new Map(allOrders.filter(o => o.customerUid === u.uid).slice(0, 3).map(o => [o.id, o])).values()) as Order[]).map((order, idx) => (
+src/components/AdminView.tsx:                        <div key={`${order.id}-${idx}`} className="flex items-center justify-between text-[10px] bg-white/5 p-2 rounded-lg border border-white/5">
+src/components/AdminView.tsx:                  {uniqueCities.map((city, idx) => (
+src/components/AdminView.tsx:                      key={`${city.id}-${idx}`}
+src/components/AdminView.tsx:                        }).slice(0, 12).map(p => [p.id, p])).values()) as FoodItem[]).map((product, idx) => (
+src/components/AdminView.tsx:                          <div key={`${product.id}-${idx}`} className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden group hover:border-blue-500/30 transition-all">
+src/components/AdminView.tsx:              {uniqueCities.map((city, idx) => (
+src/components/AdminView.tsx:                  key={`${city.id}-${idx}`}
+src/components/AdminView.tsx:                                    .map((t, idx) => {
+src/components/AdminView.tsx:                                          key={`transaction-${t.id || idx}-${idx}`}
+src/components/AdminView.tsx:                                          transition={{ delay: idx * 0.02 }}
+src/components/AdminView.tsx:                                .map(o => [o.id, o])).values()) as Order[]).map((order, idx) => (
+src/components/AdminView.tsx:                                  <div key={`${order.id}-${idx}`} className="bg-white/5 p-6 rounded-2xl flex items-center justify-between group hover:bg-white/10 transition-all">
+src/components/AdminView.tsx:                              {categories.map((cat, idx) => <option key={`${cat.id}-${idx}`} value={cat.name}>{cat.name}</option>)}
+src/components/AdminView.tsx:                          {['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'].map((day, idx) => (
+src/components/AdminView.tsx:                            <div key={`product-availability-${day}-${idx}`} className={`p-4 rounded-2xl border transition-all ${
+src/components/AdminView.tsx:                    {restaurantProducts.map((product, idx) => (
+src/components/AdminView.tsx:                        key={`${product.id}-${idx}`}

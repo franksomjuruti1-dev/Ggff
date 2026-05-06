@@ -1,0 +1,11 @@
+{
+  "name": "Remix: iFood Clara (v1.1.2 Stable)",
+  "description": "Plataforma completa de delivery (Porto Velho) - Versão estável com sincronização total, correção de falhas de asserção e permissões de sistema otimizadas.",
+  "requestFramePermissions": [
+    "geolocation",
+    "camera",
+    "microphone",
+    "bluetooth",
+    "usb"
+  ]
+}
