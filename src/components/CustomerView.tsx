@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useSearchParams, useNavigate, useParams } from 'react-router-dom';
 import { db } from '../firebase';
 import { 
@@ -16,10 +16,23 @@ import {
   deleteDoc,
   setDoc,
   limit,
-  increment
+  increment,
+  startAfter
 } from 'firebase/firestore';
-import { Search, ShoppingBag, MapPin, Star, Clock, Utensils, ChevronRight, Users, ArrowLeft, Plus, Minus, Package, Trash2, CheckCircle2, Zap, MessageSquare, X, Navigation, Store, Bike, Car, ArrowDownWideNarrow, Filter, ClipboardList, Image as ImageIcon, Edit2, Edit, LogOut, User, Shield, ShieldCheck, Copy, Flame, ChevronLeft, Truck, Video, AlertCircle, Headphones, Headset, AlertTriangle, Check, TrendingUp, RefreshCw, Hash, Loader2, ExternalLink, Info, Mail, MessageCircle, Heart, Settings2, Camera, CreditCard, BellRing, ShieldAlert } from 'lucide-react';
+import { Search, ShoppingBag, MapPin, Star, Clock, Utensils, ChevronRight, Users, ArrowLeft, Plus, Minus, Package, Trash2, CheckCircle2, Zap, MessageSquare, X, Navigation, Navigation2, Store, Bike, Car, ArrowDownWideNarrow, Filter, ClipboardList, Image as ImageIcon, Edit2, Edit, LogOut, User, Shield, ShieldCheck, Copy, Flame, ChevronLeft, Truck, Video, AlertCircle, Headphones, Headset, AlertTriangle, Check, TrendingUp, RefreshCw, Hash, Loader2, ExternalLink, Info, Mail, MessageCircle, Heart, Settings2, Camera, CreditCard, BellRing, ShieldAlert, Map as MapIcon, Lock, Unlock, CupSoda, Pizza, Cake } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { MapContainer, TileLayer, Marker, useMap, useMapEvents } from 'react-leaflet';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+
+// Fix Leaflet icon issue
+// @ts-ignore
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png',
+  iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png',
+  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
+});
 import { getRestaurantStatus, isTimeInRange, getPortoVelhoTime } from '../utils/hours';
 import { 
   DndContext, 
@@ -162,6 +175,7 @@ interface GlobalSettings {
   trialPeriodDays?: number;
   highlightDailyCost?: number;
   clientIcons?: ClientIconSettings;
+  businessRegistrationPhone?: string;
 }
 
 interface Category {
@@ -171,7 +185,37 @@ interface Category {
   imageUrl?: string;
   active: boolean;
   order?: number;
+  status?: 'active' | 'inactive';
 }
+
+const renderCategoryIcon = (iconName: string, size: number = 24, className?: string) => {
+  const normalized = (iconName || '').toLowerCase().trim();
+  switch (normalized) {
+    case 'cupsoda':
+    case 'cup':
+    case 'bebidas':
+      return <CupSoda size={size} className={className} />;
+    case 'pizza':
+      return <Pizza size={size} className={className} />;
+    case 'cake':
+    case 'doces':
+      return <Cake size={size} className={className} />;
+    case 'zap':
+    case 'acais':
+    case 'açaís':
+      return <Zap size={size} className={className} />;
+    case 'store':
+    case 'padaria':
+      return <Store size={size} className={className} />;
+    case 'bike':
+      return <Bike size={size} className={className} />;
+    case 'car':
+      return <Car size={size} className={className} />;
+    case 'utensils':
+    default:
+      return <Utensils size={size} className={className} />;
+  }
+};
 
 interface AddOn {
   id: string;
@@ -796,6 +840,42 @@ interface CustomerViewProps {
   };
 }
 
+const MapController = ({ center }: { center: { lat: number; lng: number } | null }) => {
+  const map = useMap();
+  useEffect(() => {
+    if (center && center.lat && center.lng) {
+      map.setView([center.lat, center.lng], 18);
+      setTimeout(() => {
+        map.invalidateSize();
+      }, 250);
+    }
+  }, [center, map]);
+  return null;
+};
+
+const MapEvents = ({ onCenterChange, onZoomChange }: { onCenterChange: (center: { lat: number; lng: number }) => void, onZoomChange: (zoomValue: number) => void }) => {
+  useMapEvents({
+    dragend: (e) => {
+      const center = e.target.getCenter();
+      onCenterChange({ lat: center.lat, lng: center.lng });
+    },
+    zoomend: (e) => {
+      onZoomChange(e.target.getZoom());
+    }
+  });
+  return null;
+};
+
+const SatelliteMapEvents = ({ onCenterChange }: { onCenterChange: (center: { lat: number; lng: number }) => void }) => {
+  useMapEvents({
+    moveend: (e) => {
+      const center = e.target.getCenter();
+      onCenterChange({ lat: center.lat, lng: center.lng });
+    }
+  });
+  return null;
+};
+
 const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, featureFlags }) => {
   const [searchParams] = useSearchParams();
   const { restaurantId: routeRestaurantId } = useParams<{ restaurantId: string }>();
@@ -848,6 +928,216 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
   }, [forcedCityId, cities]);
   const [branches, setBranches] = useState<any[]>([]);
   const [activeCity, setActiveCity] = useState<City | null>(null);
+  const [isManualCity, setIsManualCity] = useState<boolean>(() => {
+    return localStorage.getItem('manual_city_selected') === 'true';
+  });
+
+  const redirectToExternalLocationCapture = () => {
+    console.log("[CustomerView] Iniciando captura automática de localização...");
+    
+    if (!navigator.geolocation) {
+      alert("Localização não capturada: seu navegador não suporta geolocalização.");
+      return;
+    }
+
+    setIsWaitingNative(true);
+    setLocationInfo('Capturando...');
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const { latitude, longitude } = position.coords;
+        console.log("[CustomerView] Localização capturada automaticamente:", latitude, longitude);
+        setUserLocation({ latitude, longitude });
+        setIsNativeLocationActive(true);
+        sessionStorage.setItem('native_location_active', 'true');
+        fetchAddress(latitude, longitude);
+        setIsWaitingNative(false);
+      },
+      (error) => {
+        console.error("[CustomerView] Erro na captura automática:", error);
+        setIsWaitingNative(false);
+        // Silently fail, we already have a default location
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
+  };
+  const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(() => {
+    const saved = localStorage.getItem('user_location');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (parsed.latitude && parsed.longitude) return parsed;
+      } catch (e) {}
+    }
+    // Default to Porto Velho to avoid "blocking" state
+    return { latitude: -8.7618, longitude: -63.9039 };
+  });
+  const [isNativeLocationActive, setIsNativeLocationActive] = useState<boolean>(
+    sessionStorage.getItem('native_location_active') === 'true'
+  );
+  const [isWaitingNative, setIsWaitingNative] = useState<boolean>(false);
+  const [locationInfo, setLocationInfo] = useState<string>(() => {
+    return localStorage.getItem('user_location_info') || 'Porto Velho';
+  });
+  const [userCity, setUserCity] = useState<string>('');
+  
+  // Advanced Address Management
+  interface SavedAddress {
+    id: string;
+    name: string;
+    shortAddress?: string;
+    neighborhood?: string;
+    fullAddress: string;
+    latitude: number;
+    longitude: number;
+    createdAt: any;
+    isCurrent?: boolean;
+  }
+  const [savedAddresses, setSavedAddresses] = useState<SavedAddress[]>([]);
+  const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [addressToDelete, setAddressToDelete] = useState<SavedAddress | null>(null);
+  const [isManagerUnlocked, setIsManagerUnlocked] = useState<boolean>(() => {
+    if (typeof window !== 'undefined' && localStorage.getItem('user_id')) {
+      const uid = localStorage.getItem('user_id');
+      return localStorage.getItem(`manager_unlocked_${uid}`) === 'true';
+    }
+    return false;
+  });
+  const [showManagerLockModal, setShowManagerLockModal] = useState(false);
+  const [managerLockPass, setManagerLockPass] = useState('');
+  const [managerPlaceholder, setManagerPlaceholder] = useState('');
+
+  useEffect(() => {
+    if (!showManagerLockModal) {
+      setManagerPlaceholder('');
+      return;
+    }
+    const fullText = "senha...";
+    let i = 0;
+    let deleting = false;
+    let timer: any;
+
+    const animate = () => {
+      setManagerPlaceholder(fullText.substring(0, i));
+      if (!deleting && i === fullText.length) {
+        deleting = true;
+        timer = setTimeout(animate, 1500);
+      } else if (deleting && i === 0) {
+        deleting = false;
+        timer = setTimeout(animate, 500);
+      } else {
+        i = deleting ? i - 1 : i + 1;
+        timer = setTimeout(animate, deleting ? 80 : 150);
+      }
+    };
+
+    animate();
+    return () => clearTimeout(timer);
+  }, [showManagerLockModal]);
+
+  const [profileFormData, setProfileFormData] = useState({
+    displayName: '',
+    email: '',
+    cpf: '',
+    password: ''
+  });
+
+  useEffect(() => {
+    if (profile) {
+      setProfileFormData({
+        displayName: profile.displayName || '',
+        email: profile.email || '',
+        cpf: profile.cpf || profile.taxId || '',
+        password: ''
+      });
+    }
+  }, [profile]);
+
+  const toggleMainAddress = async (addrId: string) => {
+    if (!user) return;
+    
+    // 1. Optimistic UI update for list state
+    setSavedAddresses(prev => prev.map(addr => ({
+      ...addr,
+      isCurrent: addr.id === addrId
+    })));
+
+    const selected = savedAddresses.find(a => a.id === addrId);
+    if (selected) {
+      // 2. Instant header update
+      setUserLocation({ latitude: selected.latitude, longitude: selected.longitude });
+      setLocationInfo(selected.shortAddress || selected.name);
+      
+      // 3. Find and set the active city based on coordinates (Fixed fields lat/lng)
+      if (cities.length > 0) {
+        let closestCity = null;
+        let minDistance = Infinity;
+
+        cities.forEach(city => {
+          if (city.lat && city.lng && !isNaN(city.lat) && !isNaN(city.lng)) {
+            const dist = Math.sqrt(
+              Math.pow(city.lat - selected.latitude, 2) + 
+              Math.pow(city.lng - selected.longitude, 2)
+            );
+            if (dist < minDistance) {
+              minDistance = dist;
+              closestCity = city;
+            }
+          }
+        });
+
+        if (closestCity && minDistance < 0.1) {
+          setActiveCity(closestCity);
+          setIsManualCity(true);
+          localStorage.setItem('manual_city_selected', 'true');
+          localStorage.setItem('active_city_v2_id', closestCity.id);
+          if (user?.uid) {
+            updateProfileData({ cityId: closestCity.id, city: closestCity.name })
+              .catch(err => console.error("Error saving city to profile from main address toggle:", err));
+          }
+        }
+      }
+    }
+
+    try {
+      // 4. Persistence in Background
+      const batch: any[] = [];
+      savedAddresses.forEach(addr => {
+        const addrRef = doc(db, `users/${user.uid}/addresses`, addr.id);
+        if (addr.id === addrId) {
+          batch.push(updateDoc(addrRef, { isCurrent: true }));
+        } else if (addr.isCurrent) {
+          batch.push(updateDoc(addrRef, { isCurrent: false }));
+        }
+      });
+      await Promise.all(batch);
+    } catch (e) {
+      console.error("Error toggling main address:", e);
+      // Fallback on error - re-fetch to sync
+      fetchSavedAddresses();
+    }
+  };
+  const [isAddressModalOpen, setIsAddressModalOpen] = useState(false);
+  const [isSatelliteMapOpen, setIsSatelliteMapOpen] = useState(false);
+  const [isCitySelectModalOpen, setIsCitySelectModalOpen] = useState(false);
+  const [isTypingOnSatellite, setIsTypingOnSatellite] = useState(false);
+  const [satelliteSearchQuery, setSatelliteSearchQuery] = useState('');
+  const [satelliteSearchResults, setSatelliteSearchResults] = useState<any[]>([]);
+  const [isSearchingSatelliteQuery, setIsSearchingSatelliteQuery] = useState(false);
+  const [hasSelectedFromSatelliteSearch, setHasSelectedFromSatelliteSearch] = useState(false);
+  const [satelliteMapCenter, setSatelliteMapCenter] = useState<{ lat: number; lng: number }>({ lat: -8.7618, lng: -63.9039 });
+  const [satelliteMarkerPosition, setSatelliteMarkerPosition] = useState<{ lat: number; lng: number }>({ lat: -8.7618, lng: -63.9039 });
+  const [satelliteAddress, setSatelliteAddress] = useState<string>('Buscando endereço...');
+  const [isSearchingSatelliteAddress, setIsSearchingSatelliteAddress] = useState(false);
+  const [locationModalCity, setLocationModalCity] = useState<City | null>(null);
+  const [mapCenter, setMapCenter] = useState<{ lat: number; lng: number } | null>(null);
+  const [markerPosition, setMarkerPosition] = useState<{ lat: number; lng: number } | null>(null);
+  const [zoom, setZoom] = useState(15);
+  const [selectedAddressResult, setSelectedAddressResult] = useState<any>(null);
+  const [isConfirmingLocation, setIsConfirmingLocation] = useState(false);
+  const [isSearchingAddress, setIsSearchingAddress] = useState(false);
+  const [addressSearchResults, setAddressSearchResults] = useState<any[]>([]);
+  const [addressSearchQuery, setAddressSearchQuery] = useState('');
   const [banners, setBanners] = useState<Banner[]>(commonData.banners);
   const [categories, setCategories] = useState<Category[]>(commonData.categories);
   const [marketingPopups, setMarketingPopups] = useState<MarketingPopup[]>([]);
@@ -897,20 +1187,111 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
   const [isRestaurantSearchOpen, setIsRestaurantSearchOpen] = useState(false);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [isCartOpen, setIsCartOpen] = useState(false);
+  const [cartViewTab, setCartViewTab] = useState<'cart' | 'favorites'>('cart');
+  const [selectedFavoriteProductIds, setSelectedFavoriteProductIds] = useState<string[]>([]);
   const [isOrdering, setIsOrdering] = useState(false);
   const [isSavingCheckoutInfo, setIsSavingCheckoutInfo] = useState(false);
   const [activeOrders, setActiveOrders] = useState<any[]>([]);
   const [optimisticOrders, setOptimisticOrders] = useState<any[]>([]);
   const [rides, setRides] = useState<Ride[]>([]);
-  const [view, setView] = useState<'home' | 'restaurant' | 'orders'>('home');
+  const [view, setView] = useState<'home' | 'restaurant' | 'orders' | 'search-results'>('home');
   const [allProducts, setAllProducts] = useState<FoodItem[]>(commonData.foodItems);
+  const [lastProductDoc, setLastProductDoc] = useState<any>(null);
+  const [hasMoreProducts, setHasMoreProducts] = useState(true);
+  const [isPaginationLoading, setIsPaginationLoading] = useState(false);
 
-  // Sync allProducts with commonData.foodItems when it changes
+  // Reset pagination state and fetch available products to be filtered client-side by cityRestaurants
   useEffect(() => {
-    if (commonData.foodItems && commonData.foodItems.length > 0) {
-      setAllProducts(commonData.foodItems);
+    if (!activeCity) {
+      if (commonData.foodItems && commonData.foodItems.length > 0) {
+        setAllProducts(commonData.foodItems);
+      }
+      return;
     }
-  }, [commonData.foodItems]);
+
+    let isSubscribed = true;
+    console.log('[CustomerView] Active city changed to:', activeCity.name, 'Fetching available products...');
+    
+    const fetchCityProducts = async () => {
+      setIsPaginationLoading(true);
+      try {
+        const foodItemsRef = collection(db, 'food_items');
+        const q = query(
+          foodItemsRef,
+          where('available', '==', true),
+          limit(300)
+        );
+        const snap = await getDocs(q);
+        if (isSubscribed) {
+          const items = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as FoodItem));
+          console.log(`[CustomerView] Loaded ${items.length} total active products across database to be filtered strictly by city restaurants...`);
+          setAllProducts(items);
+          
+          if (snap.docs.length > 0) {
+            setLastProductDoc(snap.docs[snap.docs.length - 1]);
+            setHasMoreProducts(snap.docs.length >= 300);
+          } else {
+            setLastProductDoc(null);
+            setHasMoreProducts(false);
+          }
+        }
+      } catch (err) {
+        console.error('[CustomerView] Error fetching city products:', err);
+      } finally {
+        if (isSubscribed) {
+          setIsPaginationLoading(false);
+        }
+      }
+    };
+
+    fetchCityProducts();
+
+    return () => {
+      isSubscribed = false;
+    };
+  }, [activeCity, commonData.foodItems]);
+
+  const fetchNextProductsBatch = async () => {
+    if (isPaginationLoading) return;
+    setIsPaginationLoading(true);
+    try {
+      const foodItemsRef = collection(db, 'food_items');
+      const constraints: any[] = [
+        where('available', '==', true),
+        limit(50)
+      ];
+      
+      if (lastProductDoc) {
+        constraints.push(startAfter(lastProductDoc));
+      }
+
+      const q = query(foodItemsRef, ...constraints);
+      
+      const snap = await getDocs(q);
+      if (snap.empty) {
+        setHasMoreProducts(false);
+      } else {
+        const newItems = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as FoodItem));
+        setAllProducts(prev => {
+          const merged = [...prev];
+          newItems.forEach(item => {
+            if (!merged.some(p => p.id === item.id)) {
+              merged.push(item);
+            }
+          });
+          return merged;
+        });
+        setLastProductDoc(snap.docs[snap.docs.length - 1]);
+        if (snap.docs.length < 50) {
+          setHasMoreProducts(false);
+        }
+      }
+    } catch (err) {
+      console.error('[CustomerView] Error fetching next products pagination batch:', err);
+    } finally {
+      setIsPaginationLoading(false);
+    }
+  };
   const [sortBy, setSortBy] = useState<'default' | 'cheapest' | 'rated' | 'closest'>('default');
   const [maxPrice, setMaxPrice] = useState<number | null>(null);
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
@@ -1329,22 +1710,38 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
         return false;
       }
 
-      // NOVO: Regra dos 3 produtos. Para aparecer no iFood Tupã, tem que ter pelo menos 3 produtos.
-      const productCount = allProducts.filter(p => p.restaurantId === r.id).length;
-      if (productCount < 3) {
-        return false;
+      // Se o restaurante possui latitude e longitude válidas cadastradas, identificamos geograficamente a qual cidade ele pertence
+      const rLat = parseFloat(r.latitude as any);
+      const rLng = parseFloat(r.longitude as any);
+      if (!isNaN(rLat) && !isNaN(rLng) && rLat !== 0 && rLng !== 0) {
+        let closestCityId: string | null = null;
+        let minDistance = Infinity;
+        for (const city of cities) {
+          const cLat = parseFloat((city.latitude != null ? city.latitude : city.lat) as any);
+          const cLng = parseFloat((city.longitude != null ? city.longitude : city.lng) as any);
+          if (!isNaN(cLat) && !isNaN(cLng)) {
+            const distance = Math.sqrt(Math.pow(cLat - rLat, 2) + Math.pow(cLng - rLng, 2));
+            if (distance < minDistance) {
+              minDistance = distance;
+              closestCityId = city.id;
+            }
+          }
+        }
+        // Confiança de distância: Se a distância em graus é menor ou igual a 1.5 (~165km),
+        // temos certeza geográfica que pertence a essa cidade.
+        if (closestCityId && minDistance <= 1.5) {
+          return closestCityId === activeCity.id;
+        }
       }
 
-      if (r.cityId === activeCity.id) return true;
-      if (r.city) {
-        if (normalize(r.city) === activeCityName) return true;
-      }
+      // Fallback para mapear se pelo menos o ID ou o nome textual bater com a cidade selecionada
+      if (r.cityId && r.cityId === activeCity.id) return true;
+      if (r.city && normalize(r.city) === activeCityName) return true;
+
+      const hasNoCity = !r.city || r.city === "NÃO DEFINIDO" || r.city === "UNDEFINED";
+      const hasNoCityId = !r.cityId || r.cityId === "NÃO DEFINIDO" || r.cityId === "UNDEFINED";
       
-      // Fallback: If restaurant has NO city or "NÃO DEFINIDO", and there's only one city in the system, show it
-      const isCityUndefined = !r.city || r.city === "NÃO DEFINIDO" || r.city === "UNDEFINED";
-      const isCityIdUndefined = !r.cityId || r.cityId === "NÃO DEFINIDO" || r.cityId === "UNDEFINED";
-      
-      if (isCityUndefined || isCityIdUndefined) {
+      if (hasNoCity && hasNoCityId) {
         if (cities.length === 1) {
           console.log(`Restaurant ${r.name} has no city, but only one city exists. Showing it.`);
           return true;
@@ -1353,7 +1750,7 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
 
       return false;
     });
-  }, [restaurants, activeCity, cities]);
+  }, [restaurants, activeCity, cities, adminMode]);
 
   const cityProducts = useMemo(() => {
     if (!activeCity) return allProducts;
@@ -1362,24 +1759,31 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
     console.log('Filtering products. Active city:', activeCity.name, 'Restaurants in city:', cityRestaurants.length);
 
     return allProducts.filter(p => {
-      if (p.cityId === activeCity.id) return true;
-      if (restaurantIds.has(p.restaurantId)) return true;
-      
-      // Log why a product might be missing
-      if (allProducts.length < 50) { // Only log if few products to avoid spam
-        console.log(`Product ${p.name} filtered out. CityId: ${p.cityId}, RestId: ${p.restaurantId}`);
+      // O produto deve pertencer estritamente a um restaurante ativo desta cidade
+      const belongs = restaurantIds.has(p.restaurantId);
+      if (!belongs && allProducts.length < 50) {
+        console.log(`Product ${p.name} filtered out. RestId: ${p.restaurantId} not in active city restaurants.`);
       }
-      return false;
+      return belongs;
     });
   }, [allProducts, cityRestaurants, activeCity]);
 
   const cityBanners = useMemo(() => {
-    if (!activeCity) return banners;
+    if (!activeCity) return banners.filter(b => b.active !== false);
     const restaurantIds = new Set(cityRestaurants.map(r => r.id));
     return banners.filter(banner => {
-      // If banner has specific cities, check if active city is included
+      // If banner is deactivated, do not show it
+      if (banner.active === false) return false;
+
+      // If banner has specific cities, check if active city is included (handle case-insensitive and ID fallback)
       if (banner.cities && banner.cities.length > 0) {
-        if (!banner.cities.includes(activeCity.name)) return false;
+        const hasMatchedCity = banner.cities.some((c: string) => 
+          c && activeCity && (
+            c.toLowerCase().trim() === activeCity.name.toLowerCase().trim() ||
+            c.toLowerCase().trim() === activeCity.id?.toLowerCase().trim()
+          )
+        );
+        if (!hasMatchedCity) return false;
       }
 
       if (banner.linkType === 'restaurant' && banner.linkId) {
@@ -1423,7 +1827,7 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
     });
 
     return activeSchedulesList.map(schedule => {
-      const categoryNames = schedule.categoryIds
+      const categoryNames = (schedule.categoryIds || [])
         .map(id => categories.find(c => c.id === id)?.name)
         .filter((name): name is string => !!name);
 
@@ -1583,7 +1987,594 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
     trackView();
   }, []);
 
-  const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+
+  // Bridge function defined once at component level
+  const fetchAddress = useCallback(async (lat: number, lon: number) => {
+    try {
+      const response = await fetch(`/api/geocode?lat=${lat}&lon=${lon}`);
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      const data = await response.json();
+      
+      if (data && data.address) {
+        const city = data.address.city || data.address.town || data.address.village || 'Cidade Desconhecida';
+        const road = data.address.road || '';
+        const suburb = data.address.suburb || data.address.neighbourhood || data.address.district || '';
+        const houseNumber = data.address.house_number || '';
+        
+        const shortRoad = road.replace('Rua', 'R.').replace('Avenida', 'Av.');
+        const info = `${suburb ? `${suburb}, ` : ''}${shortRoad}${houseNumber ? `, ${houseNumber}` : ''}`;
+        setLocationInfo(info);
+        setUserCity(city);
+      } else {
+        setLocationInfo('Endereço não encontrado');
+      }
+    } catch (error) {
+      console.error("Erro ao buscar endereço:", error);
+      setLocationInfo('Erro ao obter endereço');
+    }
+  }, []);
+
+  const fetchSatelliteAddress = useCallback(async (lat: number, lon: number) => {
+    setIsSearchingSatelliteAddress(true);
+    try {
+      const response = await fetch(`/api/geocode?lat=${lat}&lon=${lon}`);
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      const data = await response.json();
+      
+      if (data && data.address) {
+        const city = data.address.city || data.address.town || data.address.village || 'Porto Velho';
+        const road = data.address.road || data.address.pedestrian || '';
+        const suburb = data.address.suburb || data.address.neighbourhood || data.address.district || '';
+        const houseNumber = data.address.house_number || '';
+        
+        const shortRoad = road.replace('Rua', 'R.').replace('Avenida', 'Av.');
+        const info = `${suburb ? `${suburb}, ` : ''}${shortRoad}${houseNumber ? `, ${houseNumber}` : ''}`;
+        setSatelliteAddress(info || data.display_name || 'Endereço identificado');
+      } else {
+        setSatelliteAddress('Endereço não encontrado');
+      }
+    } catch (error) {
+      console.error("Erro satellite geocode:", error);
+      setSatelliteAddress('Erro ao obter endereço');
+    } finally {
+      setIsSearchingSatelliteAddress(false);
+    }
+  }, []);
+
+  const handleSatelliteAddressSearch = async (queryStr: string) => {
+    if (!queryStr || queryStr.trim().length < 3) {
+      setSatelliteSearchResults([]);
+      return;
+    }
+    
+    setIsSearchingSatelliteQuery(true);
+    try {
+      const cityName = locationModalCity?.name?.trim() || 'Porto Velho';
+      const fullQuery = `${queryStr}, ${cityName}, Brasil`;
+      const response = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(fullQuery)}&limit=10&lang=pt`);
+      if (response.ok) {
+        const data = await response.json();
+        if (data && data.features && data.features.length > 0) {
+          const results = data.features
+            .map((f: any) => normalizeAddressResult(f, 'photon'))
+            .filter(Boolean);
+          setSatelliteSearchResults(results);
+          return;
+        }
+      }
+      
+      const nomResponse = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(fullQuery)}&limit=10&addressdetails=1&countrycodes=br`);
+      if (nomResponse.ok) {
+        const nomData = await nomResponse.json();
+        const results = nomData
+          .map((n: any) => normalizeAddressResult(n, 'nominatim'))
+          .filter(Boolean);
+        setSatelliteSearchResults(results);
+      }
+    } catch (error) {
+      console.error("Error searching satellite address:", error);
+    } finally {
+      setIsSearchingSatelliteQuery(false);
+    }
+  };
+
+  const confirmSatelliteLocation = useCallback(() => {
+    if (!satelliteMarkerPosition) return;
+    
+    const newLoc = { latitude: satelliteMarkerPosition.lat, longitude: satelliteMarkerPosition.lng };
+    setUserLocation(newLoc);
+    setLocationInfo(satelliteAddress);
+    
+    // Save to localStorage so it is remembered
+    localStorage.setItem('user_location', JSON.stringify(newLoc));
+    localStorage.setItem('user_location_info', satelliteAddress);
+    
+    // Find closest city
+    if (cities.length > 0) {
+      let closestCity = null;
+      let minDistance = Infinity;
+
+      cities.forEach(city => {
+        if (city.lat && city.lng && !isNaN(city.lat) && !isNaN(city.lng)) {
+          const dist = Math.sqrt(
+            Math.pow(city.lat - satelliteMarkerPosition.lat, 2) + 
+            Math.pow(city.lng - satelliteMarkerPosition.lng, 2)
+          );
+          if (dist < minDistance) {
+            minDistance = dist;
+            closestCity = city;
+          }
+        }
+      });
+
+      if (closestCity) {
+        setActiveCity(closestCity);
+        console.log("[CustomerView] Satellite update active city:", (closestCity as any).name);
+      }
+    }
+    
+    setIsSatelliteMapOpen(false);
+  }, [satelliteMarkerPosition, satelliteAddress, cities]);
+
+  const getPosition = useCallback(async (bypassNativeCheck: boolean = false) => {
+    // Se já temos localização nativa, não forçamos requisição do navegador (evita conflito WebView)
+    if (!bypassNativeCheck && (isNativeLocationActive || sessionStorage.getItem('native_location_active') === 'true') && userLocation) {
+      console.log("[CustomerView] Using active native bridge location");
+      fetchAddress(userLocation.latitude, userLocation.longitude);
+      return;
+    }
+
+    if ("geolocation" in navigator) {
+      // Check permission status first to avoid blocking popups automatically
+      if (!bypassNativeCheck && (navigator as any).permissions) {
+        try {
+          const status = await (navigator as any).permissions.query({ name: 'geolocation' });
+          if (status.state === 'denied') {
+             console.log("[CustomerView] Geolocation denied by user, skipping request");
+             return;
+          }
+          if (status.state === 'prompt' && !bypassNativeCheck) {
+             console.log("[CustomerView] Geolocation requires prompt, skipping auto-request to avoid blocking");
+             return;
+          }
+        } catch (e) {
+          console.warn("[CustomerView] Error querying permission status:", e);
+        }
+      }
+
+      console.log("[CustomerView] Requesting geolocation...");
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const { latitude, longitude } = position.coords;
+          console.log(`[CustomerView] Geolocation success: ${latitude}, ${longitude}`);
+          setUserLocation({ latitude, longitude });
+          fetchAddress(latitude, longitude);
+        },
+        (error) => {
+          console.error("[CustomerView] Erro de geolocalização:", error);
+          if (error.code === error.TIMEOUT) {
+            console.log("[CustomerView] Geolocation timeout, retrying with low accuracy...");
+            navigator.geolocation.getCurrentPosition(
+              (pos) => {
+                const { latitude, longitude } = pos.coords;
+                setUserLocation({ latitude, longitude });
+                fetchAddress(latitude, longitude);
+              },
+              (err2) => {
+                console.error("[CustomerView] Geolocation retry failed:", err2);
+                // Fail silently
+              },
+              { enableHighAccuracy: false, timeout: 10000, maximumAge: 30000 }
+            );
+          } else {
+            // Permission denied or other error
+            console.warn("[CustomerView] Manual location will be used as fallback");
+          }
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      );
+    }
+  }, [userLocation, fetchAddress, isNativeLocationActive]);
+
+  // Native Location Bridge (para APK Android)
+  useEffect(() => {
+    (window as any).updateNativeLocation = (lat: number, lng: number, accuracy?: number) => {
+      console.log(`[Bridge CP] Nativo update: ${lat}, ${lng} (acc: ${accuracy})`);
+      const newLoc = { latitude: lat, longitude: lng };
+      setUserLocation(newLoc);
+      setIsNativeLocationActive(true);
+      setIsWaitingNative(false);
+      sessionStorage.setItem('native_location_active', 'true');
+      // Trigger address update immediately when native bridge calls
+      fetchAddress(lat, lng);
+    };
+    // If we're in a WebView environment, tell the UI we're expecting native updates
+    if (!userLocation && (window.navigator.userAgent.toLowerCase().includes('messenger') || 
+        window.navigator.userAgent.toLowerCase().includes('android'))) {
+      setIsWaitingNative(true);
+    }
+    return () => {
+      delete (window as any).updateNativeLocation;
+    };
+  }, [fetchAddress, userLocation]);
+
+  // Listener para atualizações de localização externa via Firestore (AuthContext profile)
+  useEffect(() => {
+    if (profile?.lastLocation) {
+      const { latitude, longitude, capturedAt } = profile.lastLocation;
+      const now = new Date();
+      const captureDate = new Date(capturedAt);
+      
+      // Se a captura foi recente (últimos 5 minutos), aplicamos
+      if (now.getTime() - captureDate.getTime() < 300000) {
+        console.log("[CustomerView] New location detected via Profile Sync:", latitude, longitude);
+        setUserLocation({ latitude, longitude });
+        fetchAddress(latitude, longitude);
+      }
+    }
+  }, [profile?.lastLocation, fetchAddress]);
+
+  // Initial position trigger
+  useEffect(() => {
+    // 0. Handle Deep Link / Redirect params
+    const lat = searchParams.get('lat');
+    const lng = searchParams.get('lng');
+    if (lat && lng) {
+      const latitude = parseFloat(lat);
+      const longitude = parseFloat(lng);
+      if (!isNaN(latitude) && !isNaN(longitude)) {
+        console.log("[CustomerView] Location received from URL params:", latitude, longitude);
+        setUserLocation({ latitude, longitude });
+        fetchAddress(latitude, longitude);
+        // Quando recebe via URL (externo), consideramos como escolha do usuário
+        setIsManualCity(false); 
+        return;
+      }
+    }
+
+    // 1. Initial Load from Cache
+    const savedLoc = localStorage.getItem('user_location');
+    const savedInfo = localStorage.getItem('user_location_info');
+    if (savedLoc && savedInfo) {
+      try {
+        const parsed = JSON.parse(savedLoc);
+        if (parsed.latitude && parsed.longitude) {
+          setUserLocation(parsed);
+          setLocationInfo(savedInfo);
+          console.log("[CustomerView] Loaded location from Cache:", savedInfo);
+          return; // Stop here if we have cache
+        }
+      } catch(e) {}
+    }
+
+    // 2. Auth Priority: Se não logado e não guest, pede cadastro primeiro
+    if (!user && !isGuest && !loading) {
+      setIsAuthModalOpen(true);
+      return;
+    }
+
+    // 3. Try GPS
+    getPosition();
+    
+    // Fallback: If after 6 seconds we still have no location, use defaults or saved
+    const timer = setTimeout(() => {
+      // Use raw localStorage check to avoid stale closure of userLocation state
+      const checkLoc = localStorage.getItem('user_location');
+      if (!checkLoc) {
+        if (savedAddresses.length > 0) {
+           const current = savedAddresses.find(a => a.isCurrent) || savedAddresses[0];
+           setUserLocation({ latitude: current.latitude, longitude: current.longitude });
+           setLocationInfo(current.shortAddress || current.name);
+           console.log("[CustomerView] Auto-selected saved address:", current.name);
+        } else {
+           // We already have a default Porto Velho coordinate set in the state initializer
+           console.log("[CustomerView] Using Porto Velho as default location");
+        }
+      }
+    }, 6000);
+    
+    return () => clearTimeout(timer);
+  }, [user, isGuest, loading]);
+
+  // Persist location to localStorage
+  useEffect(() => {
+    if (userLocation && locationInfo && locationInfo !== 'Buscando localização...') {
+      localStorage.setItem('user_location', JSON.stringify(userLocation));
+      localStorage.setItem('user_location_info', locationInfo);
+    }
+  }, [userLocation, locationInfo]);
+
+  // Advanced Address Management Logic
+  const fetchSavedAddresses = useCallback(async () => {
+    if (!user) return;
+    try {
+      const q = query(
+        collection(db, `users/${user.uid}/addresses`),
+        orderBy('createdAt', 'desc')
+      );
+      const snapshot = await getDocs(q);
+      const addrs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as SavedAddress));
+      setSavedAddresses(addrs);
+      
+      // Auto-carregar o endereço principal (isCurrent)
+      const current = addrs.find(a => a.isCurrent);
+      if (current) {
+        setUserLocation({ latitude: current.latitude, longitude: current.longitude });
+        setLocationInfo(current.shortAddress || current.name || current.fullAddress);
+      } else if (!userLocation && addrs.length > 0) {
+        const first = addrs[0];
+        setUserLocation({ latitude: first.latitude, longitude: first.longitude });
+        setLocationInfo(first.shortAddress || first.name || first.fullAddress);
+      }
+    } catch (e) {
+      console.error("Error fetching saved addresses:", e);
+    }
+  }, [user]);
+
+  useEffect(() => {
+    if (user) fetchSavedAddresses();
+  }, [user, fetchSavedAddresses]);
+
+  const deleteSavedAddress = async (addrId: string) => {
+    if (!user) return;
+    try {
+      await deleteDoc(doc(db, `users/${user.uid}/addresses`, addrId));
+      fetchSavedAddresses();
+      setAddressToDelete(null);
+    } catch (e) {
+      console.error("Error deleting address:", e);
+    }
+  };
+
+  const addressSearchTimeout = useRef<NodeJS.Timeout | null>(null);
+
+  const normalizeAddressResult = (res: any, source: 'photon' | 'nominatim') => {
+    const cityName = locationModalCity?.name || '';
+    const cityLower = cityName.toLowerCase().trim();
+    const cityBase = cityName.split('-')[0].trim().toLowerCase();
+
+    if (source === 'photon') {
+      const p = res.properties;
+      let neighbourhood = p.district || p.suburb || p.locality || "";
+      
+      const neighLower = neighbourhood.toLowerCase().trim();
+      if (neighLower === cityLower || neighLower === cityBase || cityLower.includes(neighLower) || cityBase.includes(neighLower)) {
+        neighbourhood = "";
+      }
+      
+      // Ensure the city matches (less strict check to avoid missing valid suggestions)
+      const resCity = (p.city || p.county || '').toLowerCase().trim();
+      const isMatch = !resCity || 
+                      resCity === cityLower || 
+                      resCity === cityBase || 
+                      cityLower.includes(resCity) || 
+                      resCity.includes(cityBase) ||
+                      cityName.toLowerCase().includes(resCity);
+                      
+      if (!isMatch) {
+         console.warn(`[AddressSearch] Skipping result ${p.name} as city ${resCity} doesn't match ${cityLower}`);
+         // Still allow some results if it's very close or if city is missing
+         if (resCity.length > 3) return null;
+      }
+
+      return {
+        name: p.name || p.street || "Endereço Encontrado",
+        display_name: res.display_name || [p.name || p.street, p.housenumber, neighbourhood, p.city].filter(Boolean).join(', '),
+        lat: String(res.geometry.coordinates[1]),
+        lon: String(res.geometry.coordinates[0]),
+        address: {
+          road: p.street || p.name || '',
+          neighbourhood: neighbourhood,
+          house_number: p.housenumber || '',
+          city: p.city || ''
+        }
+      };
+    } else {
+      // Nominatim
+      const addr = res.address || {};
+      let neighbourhood = addr.neighbourhood || addr.suburb || addr.city_district || addr.locality || "";
+      const neighLower = neighbourhood.toLowerCase().trim();
+
+      if (neighLower === cityLower || neighLower === cityBase || cityLower.includes(neighLower) || cityBase.includes(neighLower)) {
+        neighbourhood = "";
+      }
+      
+      const resCity = (addr.city || addr.town || addr.village || addr.municipality || '').toLowerCase().trim();
+      const isMatch = !resCity || 
+                      resCity === cityLower || 
+                      resCity === cityBase || 
+                      cityLower.includes(resCity) || 
+                      resCity.includes(cityBase) ||
+                      cityName.toLowerCase().includes(resCity);
+      
+      if (!isMatch) {
+         if (resCity.length > 3) return null;
+      }
+      
+      return {
+        name: res.name || addr.road || addr.pedestrian || "Endereço Encontrado",
+        display_name: res.display_name,
+        lat: String(res.lat),
+        lon: String(res.lon),
+        address: {
+          road: addr.road || addr.pedestrian || '',
+          neighbourhood: neighbourhood,
+          house_number: addr.house_number || '',
+          city: addr.city || addr.town || ''
+        }
+      };
+    }
+  };
+
+  const handleAddressSearch = async (queryStr: string) => {
+    if (!queryStr || queryStr.trim().length < 3 || !locationModalCity) {
+      setAddressSearchResults([]);
+      return;
+    }
+    
+    setIsSearchingAddress(true);
+    try {
+      const cityName = locationModalCity.name.trim();
+      const fullQuery = `${queryStr}, ${cityName}, Brasil`;
+      const response = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(fullQuery)}&limit=15&lang=pt`);
+      const data = await response.json();
+      
+      if (data && data.features && data.features.length > 0) {
+        const results = data.features
+          .map((f: any) => normalizeAddressResult(f, 'photon'))
+          .filter(Boolean); // Remote nulls from invalid cities
+        
+        setAddressSearchResults(results);
+      } else {
+        const nomResponse = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(fullQuery)}&limit=10&addressdetails=1&countrycodes=br`);
+        if (nomResponse.ok) {
+          const nomData = await nomResponse.json();
+          const results = nomData
+            .map((n: any) => normalizeAddressResult(n, 'nominatim'))
+            .filter(Boolean);
+          setAddressSearchResults(results);
+        }
+      }
+    } catch (error) {
+      console.error("Error searching address:", error);
+      try {
+        const fullQuery = `${queryStr}, ${locationModalCity.name}, Brasil`;
+        const nomResponse = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(fullQuery)}&limit=8&addressdetails=1&countrycodes=br`);
+        const nomData = await nomResponse.json();
+        const results = nomData.map((n: any) => normalizeAddressResult(n, 'nominatim'));
+        setAddressSearchResults(results);
+      } catch (e) {
+        console.error("[Search] All search providers failed", e);
+      }
+    } finally {
+      setIsSearchingAddress(false);
+    }
+  };
+
+  const selectAddressFromSearch = async (result: any) => {
+    try {
+      const lat = parseFloat(result.lat);
+      const lng = parseFloat(result.lon);
+      if (isNaN(lat) || isNaN(lng)) throw new Error("Invalid coordinates");
+      
+      const coords = { lat, lng };
+      setSelectedAddressResult(result);
+      setMarkerPosition(coords);
+      setMapCenter(coords);
+      setZoom(16);
+      setIsConfirmingLocation(true);
+    } catch (error) {
+      console.error("Error selecting address:", error);
+    }
+  };
+
+  const confirmLocation = async () => {
+    if (!markerPosition) return;
+    
+    setIsSearchingAddress(true);
+    try {
+      let shortAddr = "";
+      let fullAddr = "";
+      let neighborhood = "";
+
+      // Prioritize selected search result if it matches current marker position
+      const hasSelectionMatch = selectedAddressResult && 
+        Math.abs(parseFloat(selectedAddressResult.lat) - markerPosition.lat) < 0.0001 &&
+        Math.abs(parseFloat(selectedAddressResult.lon) - markerPosition.lng) < 0.0001;
+
+      if (hasSelectionMatch) {
+        shortAddr = selectedAddressResult.name;
+        fullAddr = selectedAddressResult.display_name;
+        neighborhood = selectedAddressResult.address?.neighbourhood || selectedAddressResult.address?.suburb || '';
+      } else {
+        const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${markerPosition.lat}&lon=${markerPosition.lng}&addressdetails=1`);
+        const result = await response.json();
+        
+        fullAddr = (result && result.display_name) || "Endereço desconhecido";
+        const addrDetails = (result && result.address) || {};
+        
+        const street = addrDetails.road || addrDetails.pedestrian || addrDetails.suburb || '';
+        
+        // Filter out city name from neighborhood
+        const cityName = locationModalCity?.name?.toLowerCase() || 'porto velho';
+        neighborhood = addrDetails.neighbourhood || addrDetails.suburb || addrDetails.city_district || addrDetails.locality || '';
+        
+        if (neighborhood.toLowerCase().includes(cityName) || cityName.includes(neighborhood.toLowerCase())) {
+          neighborhood = '';
+        }
+
+        const number = addrDetails.house_number || '';
+
+        shortAddr = street ? `${street}${number ? ', ' + number : ''}` : (result && result.name) || (fullAddr && fullAddr.split(',')[0]) || "Endereço desconhecido";
+      }
+
+      const newLoc = { latitude: markerPosition.lat, longitude: markerPosition.lng };
+      setUserLocation(newLoc);
+      setLocationInfo(shortAddr);
+
+      // Add: Instant activeCity update on confirmation
+      if (cities.length > 0) {
+        let closestCity = null;
+        let minDistance = Infinity;
+
+        cities.forEach(city => {
+          if (city.lat && city.lng && !isNaN(city.lat) && !isNaN(city.lng)) {
+            const dist = Math.sqrt(
+              Math.pow(city.lat - markerPosition.lat, 2) + 
+              Math.pow(city.lng - markerPosition.lng, 2)
+            );
+            if (dist < minDistance) {
+              minDistance = dist;
+              closestCity = city;
+            }
+          }
+        });
+
+        if (closestCity && minDistance < 0.1) {
+          setActiveCity(closestCity);
+          if (user?.uid) {
+            updateProfileData({ cityId: closestCity.id, city: closestCity.name })
+              .catch(err => console.error("Erro ao salvar cidade no perfil (satélite):", err));
+          }
+        }
+      }
+      
+      if (user) {
+        try {
+          // ENSURE ONLY ONE PRIMARY ADDRESS: Update others to false before adding new primary
+          const q = query(collection(db, `users/${user.uid}/addresses`), where("isCurrent", "==", true));
+          const snap = await getDocs(q);
+          const updateBatches = snap.docs.map(docSnap => updateDoc(docSnap.ref, { isCurrent: false }));
+          if (updateBatches.length > 0) await Promise.all(updateBatches);
+
+          await addDoc(collection(db, `users/${user.uid}/addresses`), {
+            name: shortAddr,
+            shortAddress: shortAddr,
+            neighborhood: neighborhood,
+            fullAddress: fullAddr,
+            latitude: markerPosition.lat,
+            longitude: markerPosition.lng,
+            isCurrent: true,
+            createdAt: serverTimestamp()
+          });
+          await fetchSavedAddresses();
+        } catch (e) {
+          console.error("Error saving address:", e);
+        }
+      }
+      
+      setIsAddressModalOpen(false);
+      setIsConfirmingLocation(false);
+      setAddressSearchQuery('');
+      setAddressSearchResults([]);
+      setLocationModalCity(null);
+      setSelectedAddressResult(null);
+    } catch (e) {
+      console.error("Error confirming location:", e);
+    } finally {
+      setIsSearchingAddress(false);
+    }
+  };
 
   // Sync location to Firestore for manager visibility
   useEffect(() => {
@@ -1595,8 +2586,7 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
       }).catch(err => console.error("Error syncing user location:", err));
     }
   }, [userLocation, user?.uid]);
-  const [locationInfo, setLocationInfo] = useState<string>('Buscando localização...');
-  const [userCity, setUserCity] = useState<string>('');
+
   const deliveryOptionsRef = useRef<HTMLDivElement>(null);
 
   // Auto-select pickup and scroll for individual links
@@ -1609,7 +2599,49 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
       }, 300);
     }
   }, [orderStep, isStoreView]);
-  const isExclusiveView = !!restaurantIdParam;
+  const isExclusiveView = !!restaurantIdParam || !!searchParams.get('r');
+
+  // Header Ray Animation Styles
+  useEffect(() => {
+    const style = document.createElement('style');
+    style.id = 'exclusive-ray-animation';
+    style.innerHTML = `
+      @keyframes ray-shine {
+        0% { left: -150%; opacity: 0; }
+        20% { opacity: 1; }
+        80% { opacity: 1; }
+        100% { left: 150%; opacity: 0; }
+      }
+      .ray-effect {
+        position: relative;
+        overflow: hidden;
+      }
+      .ray-effect::after {
+        content: "";
+        position: absolute;
+        top: -100%;
+        left: -150%;
+        width: 100%;
+        height: 300%;
+        background: linear-gradient(
+          115deg,
+          transparent 0%,
+          transparent 40%,
+          rgba(255, 255, 255, 0.3) 50%,
+          transparent 60%,
+          transparent 100%
+        );
+        transform: rotate(-15deg);
+        animation: ray-shine 3s infinite linear;
+        pointer-events: none;
+      }
+    `;
+    document.head.appendChild(style);
+    return () => {
+      const existing = document.getElementById('exclusive-ray-animation');
+      if (existing) existing.remove();
+    };
+  }, []);
 
   const [isGalleryOpen, setIsGalleryOpen] = useState(false);
   const [showCheckoutInfoModal, setShowCheckoutInfoModal] = useState(false);
@@ -1656,18 +2688,29 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
 
             let response: any = { data: { success: false } };
             
-            // Only try Mode 1 if we have an API key, otherwise skip to fallbacks
-            if (activeCity.apiKey) {
+            // Always try to fetch from server if we have a city ID. 
+            // The server will look up the API key in its own DB if it's missing from the client-side object.
+            if (activeCity.id) {
               try {
-                response = await axios.get('/api/machine/estimativas', {
-                  params: {
-                    cityId: activeCity.id,
-                    lat_partida: restaurant.latitude?.toString() || '0',
-                    lng_partida: restaurant.longitude?.toString() || '0',
-                    lat_desejado: userLocation.latitude?.toString() || '0',
-                    lng_desejado: userLocation.longitude?.toString() || '0'
-                  }
-                });
+                // Ensure coordinates are fixed to numbers and valid
+                const pLat = Number(restaurant.latitude || 0);
+                const pLng = Number(restaurant.longitude || 0);
+                const dLat = Number(userLocation.latitude || 0);
+                const dLng = Number(userLocation.longitude || 0);
+
+                if (pLat !== 0 && pLng !== 0 && dLat !== 0 && dLng !== 0) {
+                  response = await axios.get('/api/machine/estimativas', {
+                    params: {
+                      cityId: activeCity.id,
+                      lat_partida: pLat.toString(),
+                      lng_partida: pLng.toString(),
+                      lat_desejado: dLat.toString(),
+                      lng_desejado: dLng.toString()
+                    }
+                  });
+                } else {
+                  console.warn("[TupaEstimates] Invalid coordinates suppressed:", { pLat, pLng, dLat, dLng });
+                }
               } catch (mode1ApiErr) {
                 console.warn("[TupaEstimates] Mode 1 API failed:", mode1ApiErr);
               }
@@ -1682,8 +2725,8 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
               currentMapped = response.data.categorias.map((c: any, cIdx: number) => ({
                 id: c.id || c.categoria_id || `api-cat-cust-${cIdx}`,
                 nome: c.categoria_nome || c.nome || 'Categoria',
-                preco: c.estimativa_valor || c.valor || c.preco,
-                distancia: c.estimativa_distancia || c.distancia || c.km || c.km_distancia
+                preco: Number(c.valor_total || c.estimativa_valor || c.valor || c.preco || 0),
+                distancia: Number(c.estimativa_distancia || c.distancia || c.km || c.km_distancia || 0)
               }));
             } else if (response.data.success === false) {
               errorFromApi = response.data.errors?.[0]?.message || 'Não é possível realizar este trajeto.';
@@ -1702,7 +2745,7 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                   currentMapped = rawCats.map((c: any, cIdx: number) => ({
                     id: c.id || `api-cat-sec-${cIdx}`,
                     nome: c.categoria_nome || c.nome || 'Categoria',
-                    preco: c.estimativa_valor || c.preco || c.valor || 0,
+                    preco: Number(c.valor_total || c.estimativa_valor || c.preco || c.valor || 0),
                     distancia: 0
                   }));
                 }
@@ -1749,6 +2792,14 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
   }, [deliveryOption, userLocation, activeCity, cart, restaurants]);
 
   const [checkoutWhatsapp, setCheckoutWhatsapp] = useState('');
+
+  const formatPhone = (value: string) => {
+    const numbers = value.replace(/\D/g, '');
+    if (numbers.length <= 2) return numbers;
+    if (numbers.length <= 7) return `(${numbers.slice(0, 2)}) ${numbers.slice(2)}`;
+    return `(${numbers.slice(0, 2)}) ${numbers.slice(2, 7)}-${numbers.slice(7, 11)}`;
+  };
+
   const [checkoutAddress, setCheckoutAddress] = useState('');
   const [checkoutReferencePoint, setCheckoutReferencePoint] = useState('');
   const [galleryTarget, setGalleryTarget] = useState<'item' | 'popup' | 'banner' | 'restaurant' | 'profile'>('item');
@@ -2009,75 +3060,6 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
       setDeliveryOption('pickup');
     }
   }, [fromManager]);
-
-  useEffect(() => {
-    const fetchAddress = async (lat: number, lon: number) => {
-      try {
-        const response = await fetch(`/api/geocode?lat=${lat}&lon=${lon}`);
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-        const data = await response.json();
-        
-        if (data && data.address) {
-          const city = data.address.city || data.address.town || data.address.village || 'Cidade Desconhecida';
-          const road = data.address.road || '';
-          const suburb = data.address.suburb || data.address.neighbourhood || data.address.district || '';
-          const houseNumber = data.address.house_number || '';
-          
-          const shortRoad = road.replace('Rua', 'R.').replace('Avenida', 'Av.');
-          const info = `${suburb ? `${suburb}, ` : ''}${shortRoad}${houseNumber ? `, ${houseNumber}` : ''}`;
-          setLocationInfo(info);
-          setUserCity(city);
-        } else {
-          setLocationInfo('Endereço não encontrado');
-        }
-      } catch (error) {
-        console.error("Erro ao buscar endereço:", error);
-        setLocationInfo('Erro ao obter endereço');
-      }
-    };
-
-    const getPosition = () => {
-      if ("geolocation" in navigator) {
-        console.log("[CustomerView] Requesting geolocation...");
-        navigator.geolocation.getCurrentPosition(
-          (position) => {
-            const { latitude, longitude } = position.coords;
-            console.log(`[CustomerView] Geolocation success: ${latitude}, ${longitude}`);
-            setUserLocation({ latitude, longitude });
-            fetchAddress(latitude, longitude);
-          },
-          (error) => {
-            console.error("[CustomerView] Erro de geolocalização:", error);
-            if (error.code === error.TIMEOUT) {
-              console.log("[CustomerView] Geolocation timeout, retrying with low accuracy...");
-              navigator.geolocation.getCurrentPosition(
-                (pos) => {
-                  const { latitude, longitude } = pos.coords;
-                  setUserLocation({ latitude, longitude });
-                  fetchAddress(latitude, longitude);
-                },
-                (err2) => {
-                  let msg = 'Erro de localização';
-                  if (err2.code === err2.PERMISSION_DENIED) msg = 'Permissão negada';
-                  setLocationInfo(msg);
-                },
-                { enableHighAccuracy: false, timeout: 15000, maximumAge: 30000 }
-              );
-            } else {
-              let msg = 'Permissão negada';
-              if (error.code === error.POSITION_UNAVAILABLE) msg = 'Local indisponível';
-              setLocationInfo(msg);
-            }
-          },
-          { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
-        );
-      } else {
-        setLocationInfo('GPS não suportado');
-      }
-    };
-
-    getPosition();
-  }, []);
 
   useEffect(() => {
     const autoAddCity = async () => {
@@ -2657,45 +3639,68 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
   }, []);
 
   useEffect(() => {
-    if (banners.length > 1) {
+    setCurrentBannerIndex(0);
+  }, [cityBanners.length]);
+
+  useEffect(() => {
+    if (cityBanners.length > 1) {
+      const intervalDelay = (settings.carouselInterval || 5) * 1000;
       const timer = setInterval(() => {
-        setCurrentBannerIndex((prev) => (prev + 1) % banners.length);
-      }, settings.carouselInterval * 1000);
+        setCurrentBannerIndex((prev) => (prev + 1) % cityBanners.length);
+      }, intervalDelay);
       return () => clearInterval(timer);
     }
-  }, [banners.length, settings.carouselInterval]);
+  }, [cityBanners.length, currentBannerIndex, settings.carouselInterval]);
 
   useEffect(() => {
     if (cities.length === 0) return;
+    
+    // Se o usuário já possui uma cidade ativa selecionada ou se carregou do perfil/cache, não sobrescrevemos de forma alguma automaticamente!
+    if (activeCity) return;
 
-    // 1. Prioritize "Tupã" if it exists, as the app is named iFood Tupã
-    const tupa = cities.find(c => c.name.toLowerCase().includes('tupa'));
-    if (tupa && !activeCity) {
-      setActiveCity(tupa);
-      return;
-    }
-
-    // 2. Try to match by userCity name exactly
-    if (userCity && userCity !== 'Cidade Desconhecida') {
-      const match = cities.find(c => c.name.toLowerCase() === userCity.toLowerCase());
+    // 0. Prioridade absoluta: carregar a cidade cadastrada no perfil do cliente se estiver logado
+    if (profile && profile.cityId) {
+      const match = cities.find(c => c.id === profile.cityId);
       if (match) {
         if (!activeCity || activeCity.id !== match.id) {
+          console.log("[CustomerView] Cidade carregada do perfil de usuário:", match.name);
           setActiveCity(match);
         }
         return;
       }
     }
 
-    // 3. Try to find the closest city if userLocation is available
+    // 1. Try to match by userCity name exactly (from Geocoding)
+    if (userCity && userCity !== 'Cidade Desconhecida') {
+      const normalizedUserCity = userCity.split('-')[0].trim().toLowerCase();
+      const match = cities.find(c => {
+        const normalizedDBName = (c.name || '').split('-')[0].trim().toLowerCase();
+        return normalizedDBName === normalizedUserCity;
+      });
+      
+      if (match) {
+        if (!activeCity || (activeCity as any).id !== match.id) {
+          console.log("[CustomerView] City matched by name:", match.name);
+          setActiveCity(match);
+        }
+        return;
+      }
+    }
+
+    // 2. Try to find the closest city if userLocation is available
     if (userLocation && userLocation.latitude && userLocation.longitude) {
       let closestCity = null;
       let minDistance = Infinity;
 
       cities.forEach(city => {
-        if (city.lat && city.lng && !isNaN(city.lat) && !isNaN(city.lng)) {
+        // Handle both possible coordinate naming conventions
+        const cLat = city.latitude || city.lat;
+        const cLng = city.longitude || city.lng;
+        
+        if (cLat && cLng && !isNaN(cLat) && !isNaN(cLng)) {
           const dist = Math.sqrt(
-            Math.pow(city.lat - userLocation.latitude, 2) + 
-            Math.pow(city.lng - userLocation.longitude, 2)
+            Math.pow(cLat - userLocation.latitude, 2) + 
+            Math.pow(cLng - userLocation.longitude, 2)
           );
           if (dist < minDistance) {
             minDistance = dist;
@@ -2704,43 +3709,92 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
         }
       });
 
-      if (closestCity) {
-        if (!activeCity || activeCity.id !== closestCity.id) {
+      // RIGIDEZ: Só aceita se a distância for menor que ~30km (0.3 graus)
+      if (closestCity && minDistance < 0.3) {
+        if (!activeCity || (activeCity as any).id !== (closestCity as any).id) {
+          console.log("[CustomerView] Cidade próxima detectada dentro do raio de segurança:", (closestCity as any).name);
           setActiveCity(closestCity);
         }
         return;
       }
     }
 
-    // 4. Fallback to first city
-    if (!activeCity && cities.length > 0) {
-      setActiveCity(cities[0]);
+    // 3. Hub Priority: Preferir Capitais Regionais se nada foi encontrado
+    if (!activeCity) {
+      const hub = cities.find(c => 
+        (c.name || '').toLowerCase().includes('porto velho') || 
+        (c.name || '').toLowerCase().includes('tupa')
+      );
+      if (hub) {
+        setActiveCity(hub);
+        return;
+      }
     }
-  }, [cities, userCity, userLocation, activeCity]);
 
-  useEffect(() => {
-    if (activeCity && activeCity.categories && activeCity.categories.length > 0) {
-      // Use city-specific categories
-      const cityCats = activeCity.categories.map((cat: any) => ({
-        id: cat.id || cat.name,
-        name: cat.name,
-        iconName: cat.iconName || 'Utensils',
-        imageUrl: cat.imageUrl,
-        active: true
-      } as Category));
+    // 4. Fallback: Only if STILL null and first visit
+    if (!activeCity && cities.length > 0 && !isManualCity) {
+      // Cache check
+      const cachedCityId = localStorage.getItem('active_city_v2_id');
+      if (cachedCityId) {
+        const cachedMatch = cities.find(c => c.id === cachedCityId);
+        if (cachedMatch) {
+          setActiveCity(cachedMatch);
+          return;
+        }
+      }
       
-      const uniqueCats = Array.from(new Map(cityCats.map(cat => [cat.name, cat])).values());
-      setCategories(uniqueCats);
-    }
-  }, [activeCity]);
+      // Se detectamos uma localização mas não achamos cidade próxima (ex: Juruti),
+      // evitamos forçar uma cidade distante (Canoinhas).
+      if (userLocation) {
+        const cLat = cities[0].latitude || cities[0].lat;
+        const cLng = cities[0].longitude || cities[0].lng;
+        if (cLat && cLng) {
+          const dist = Math.sqrt(Math.pow(cLat - userLocation.latitude, 2) + Math.pow(cLng - userLocation.longitude, 2));
+          // Se o padrão estiver a mais de 100km (1.0 graus aprox), não forçamos.
+          if (dist > 1.0) {
+            console.log("[CustomerView] Not forcing distant fallback city:", cities[0].name);
+            return;
+          }
+        }
+      }
 
-  // Sync with pre-loaded data from AuthContext
+      // Se chegamos aqui, ou está perto o suficiente ou não temos localização.
+      // Priorizamos Hubs globais se o fallback forçado for necessário.
+      const portoVelho = cities.find(c => c.name.toLowerCase().includes('porto velho'));
+      if (portoVelho) {
+        setActiveCity(portoVelho);
+      } else {
+        setActiveCity(cities[0]);
+      }
+    }
+  }, [cities, userCity, userLocation, activeCity, isManualCity, profile]);
+
+  // Sync categories state with the global food categories from AuthContext
   useEffect(() => {
-    // Sync as data arrives, don't wait for isLoaded to be true for all
+    let finalCategories: Category[] = [];
+
+    // Se existirem categorias no banco de dados, nós as usamos diretamente.
+    if (commonData.categories && commonData.categories.length > 0) {
+      finalCategories = commonData.categories
+        .filter(c => c && (typeof c.name === 'string' || typeof c.nome === 'string') && c.active !== false && c.status !== 'inactive')
+        .map(c => ({
+          id: c.id,
+          name: (c.name || c.nome).trim(),
+          iconName: c.iconName || 'Utensils',
+          imageUrl: c.imageUrl || '',
+          active: true,
+          status: 'active'
+        } as Category));
+    }
+
+    setCategories(finalCategories);
+  }, [commonData.categories]);
+
+  // Sync general lists (restaurants, cities, banners, food items) with pre-loaded data from AuthContext
+  useEffect(() => {
     if (commonData.restaurants.length > 0) {
       setRestaurants(commonData.restaurants);
       
-      // Sync selectedRestaurant if it exists
       if (selectedRestaurant) {
         const updatedRes = commonData.restaurants.find(r => r.id === selectedRestaurant.id);
         if (updatedRes) {
@@ -2751,15 +3805,7 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
     if (commonData.cities.length > 0) setCities(commonData.cities);
     if (commonData.banners.length > 0) setBanners(commonData.banners);
     if (commonData.foodItems.length > 0) setAllProducts(commonData.foodItems);
-    
-    // Only use global categories if activeCity doesn't provide them
-    if (!(activeCity && activeCity.categories && activeCity.categories.length > 0)) {
-      if (commonData.categories.length > 0) {
-        const uniqueCats = Array.from(new Map(commonData.categories.map(cat => [cat.name, cat])).values());
-        setCategories(uniqueCats);
-      }
-    }
-  }, [commonData, activeCity]);
+  }, [commonData, selectedRestaurant]);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -2787,6 +3833,7 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
   }, []);
 
   const getScheduleTimeRemaining = (endTime: string) => {
+    if (!endTime || typeof endTime !== 'string') return '';
     const now = currentTime;
     const currentTotalSeconds = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
     
@@ -2808,15 +3855,21 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
   };
 
   const activeSchedulesMemo = useMemo(() => {
+    if (!categorySchedules || !Array.isArray(categorySchedules)) return [];
     const now = currentTime;
+    const currentDay = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'][now.getDay()];
     const currentTotalSeconds = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
 
-    return categorySchedules.filter(s => {
-      if (!s.active) return false;
+    return (categorySchedules as any[]).filter(s => {
+      if (!s || !s.active) return false;
       
       const parseTime = (t: string) => {
-        const [h, m, s] = t.split(':').map(Number);
-        return h * 3600 + (m || 0) * 60 + (s || 0);
+        if (!t || typeof t !== 'string') return 0;
+        const parts = t.split(':');
+        const h = parseInt(parts[0]) || 0;
+        const m = parseInt(parts[1]) || 0;
+        const second = parseInt(parts[2]) || 0;
+        return h * 3600 + m * 60 + second;
       };
 
       const start = parseTime(s.startTime);
@@ -2831,9 +3884,9 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
   }, [categorySchedules, currentTime]);
 
   useEffect(() => {
-    if (activeSchedulesMemo.length > 0 && !hasManuallySelectedCategory.current) {
+    if (activeSchedulesMemo.length > 0 && Array.isArray(activeSchedulesMemo) && !hasManuallySelectedCategory.current) {
       const firstActiveSchedule = activeSchedulesMemo[0];
-      if (firstActiveSchedule.categoryIds.length > 0) {
+      if (firstActiveSchedule && firstActiveSchedule.categoryIds && firstActiveSchedule.categoryIds.length > 0) {
         const scheduledCatId = firstActiveSchedule.categoryIds[0];
         const category = categories.find(c => c.id === scheduledCatId);
         if (category && activeCategory !== category.name) {
@@ -3125,7 +4178,7 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
       uniqueRestaurantIds.forEach((resId: any) => {
         const selectedCat = (selectedTupaCategories as any)[resId];
         if (selectedCat) {
-          totalTupaFee += selectedCat.preco || 0;
+          totalTupaFee += Number(selectedCat.valor_total || selectedCat.preco || selectedCat.valor || 0);
         } else {
           // Fallback to base value if no category selected/available yet
           totalTupaFee += globalSettings?.tupaDeliveryBaseValue || 7.00;
@@ -3267,11 +4320,11 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
           }
 
           if (selectedCat) {
-            resDeliveryFee = selectedCat.preco || selectedCat.valor || 0;
+            resDeliveryFee = Number(selectedCat.valor_total || selectedCat.preco || selectedCat.valor || 0);
             tupaCategoryData = {
               id: selectedCat.id || selectedCat.categoria_id,
               name: selectedCat.nome || selectedCat.categoria_nome,
-              distance: selectedCat.distancia || selectedCat.km_distancia || 0,
+              distance: Number(selectedCat.distancia || selectedCat.km_distancia || 0),
               price: resDeliveryFee
             };
           } else {
@@ -3279,7 +4332,7 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
             resDeliveryFee = globalSettings?.tupaDeliveryBaseValue || 7.00;
             tupaCategoryData = {
               id: 'default',
-              name: globalSettings?.tupaDeliveryName || 'Tupã Entrega',
+              name: globalSettings?.tupaDeliveryName || 'Xô Fome Entrega',
               distance: 0,
               price: resDeliveryFee
             };
@@ -3321,7 +4374,7 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
           status: 'pending',
           paymentMethod: selectedPaymentMethod || 'cash',
           deliveryOption: isGuest ? 'pickup' : (deliveryOption || 'normal'),
-          customerTupaNote: deliveryOption === 'fast' ? `o cliente selecionou esta categoria ${tupaCategoryData?.name || 'Tupã'} e está ciente que o valor ser pago a mais no pedido é de R$ ${resDeliveryFee.toFixed(2)}` : null,
+          customerTupaNote: deliveryOption === 'fast' ? `o cliente selecionou esta categoria ${tupaCategoryData?.name || 'Xô Fome'} e está ciente que o valor ser pago a mais no pedido é de R$ ${resDeliveryFee.toFixed(2)}` : null,
           tableNumber: (isGuest || deliveryOption === 'pickup') ? (tableNumber || '') : null,
           pixKey: pixKeyToUse || '',
           pixType: pixTypeToUse || 'cpf',
@@ -3336,6 +4389,79 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
 
         const docRef = await addDoc(ordersRef, orderData);
         orderIds.push(docRef.id);
+
+        // Salva a cidade ativa no cadastro do cliente se ele estiver logado
+        if (user?.uid && activeCity) {
+          try {
+            await updateProfileData({ cityId: activeCity.id, city: activeCity.name });
+            console.log(`[CustomerView] Cidade salva no cadastro do cliente ao fazer pedido: ${activeCity.name}`);
+          } catch (profileError) {
+            console.error("Erro ao salvar cidade no perfil do usuário no pedido:", profileError);
+          }
+        }
+
+        // Salva automaticamente o endereço do pedido nos endereços salvos do perfil se o usuário estiver logado
+        if (user?.uid && orderIds.length === 1) {
+          try {
+            const deliveryAddressStr = orderData.deliveryAddress;
+            const customerLocation = orderData.customerLocation;
+            if (deliveryAddressStr && deliveryAddressStr !== 'Endereço não informado') {
+              // 1. Buscamos do Firestore todas as localizações já salvas pelo usuário para verificar duplicados
+              const addrQuery = query(collection(db, `users/${user.uid}/addresses`));
+              const addrSnap = await getDocs(addrQuery);
+              const existingAddrs = addrSnap.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as any));
+
+              const isAlreadySaved = existingAddrs.some(addr => 
+                addr.fullAddress && addr.fullAddress.toLowerCase().trim() === deliveryAddressStr.toLowerCase().trim()
+              );
+              
+              if (!isAlreadySaved) {
+                // 2. Extrai um nome curto simples do endereço (ex: primeira parte antes da vírgula)
+                const shortAddr = deliveryAddressStr.split(',')[0].trim();
+                const neighborhood = deliveryAddressStr.split(',')[2]?.trim() || '';
+                
+                // 3. Define todos os outros endereços como isCurrent: false se formos salvar o novo como atual
+                const currentQuery = query(collection(db, `users/${user.uid}/addresses`), where("isCurrent", "==", true));
+                const currentSnap = await getDocs(currentQuery);
+                const updateBatches = currentSnap.docs.map(docSnap => updateDoc(docSnap.ref, { isCurrent: false }));
+                if (updateBatches.length > 0) await Promise.all(updateBatches);
+
+                await addDoc(collection(db, `users/${user.uid}/addresses`), {
+                  name: shortAddr,
+                  shortAddress: shortAddr,
+                  neighborhood: neighborhood,
+                  fullAddress: deliveryAddressStr,
+                  latitude: customerLocation ? customerLocation.latitude : -8.7618,
+                  longitude: customerLocation ? customerLocation.longitude : -63.9039,
+                  isCurrent: true,
+                  createdAt: serverTimestamp()
+                });
+                
+                console.log("[CustomerView] Novo endereço do pedido salvo com sucesso em endereços salvos do perfil.");
+                await fetchSavedAddresses();
+              } else {
+                // Se já estiver salvo na lista de endereços, apenas marcamos como atual/isCurrent se ainda não for
+                const matchingAddr = existingAddrs.find(addr => 
+                  addr.fullAddress && addr.fullAddress.toLowerCase().trim() === deliveryAddressStr.toLowerCase().trim()
+                );
+                if (matchingAddr && !matchingAddr.isCurrent) {
+                  const currentQuery = query(collection(db, `users/${user.uid}/addresses`), where("isCurrent", "==", true));
+                  const currentSnap = await getDocs(currentQuery);
+                  const updateBatches = currentSnap.docs.map(docSnap => updateDoc(docSnap.ref, { isCurrent: false }));
+                  if (updateBatches.length > 0) await Promise.all(updateBatches);
+
+                  await updateDoc(doc(db, `users/${user.uid}/addresses`, matchingAddr.id), {
+                    isCurrent: true
+                  });
+                  console.log("[CustomerView] Endereço do pedido existente atualizado como atual do perfil.");
+                  await fetchSavedAddresses();
+                }
+              }
+            }
+          } catch (addrError) {
+            console.error("Erro ao salvar endereço automático do pedido:", addrError);
+          }
+        }
 
         // Optimistic update for orders list
         setOptimisticOrders(prev => [...prev, { id: docRef.id, ...orderData, createdAt: new Date() }]);
@@ -3922,15 +5048,23 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
   }, [selectedRestaurant]);
 
   const filteredCategories = useMemo(() => {
-    return categories.filter(cat => {
-      // Find all schedules that include this category
-      const catSchedules = categorySchedules.filter(s => s.categoryIds.includes(cat.id));
+    // Nós NÃO filtramos as categorias para ocultá-las se não houver produtos na cidade ativa.
+    // O usuário deseja que todas as categorias salvas no front-end (lanches, bebidas, etc) e banco apareçam sempre.
+    let baseCategories = categories;
+
+    return baseCategories.filter(cat => {
+      if (!cat || !cat.id) return false;
+      // Garante que a categoria está ativa
+      if (cat.status === 'inactive' || cat.active === false) return false;
+
+      // Busca todos os cronogramas (schedules) que incluem esta categoria
+      const catSchedules = categorySchedules.filter(s => s && Array.isArray(s.categoryIds) && s.categoryIds.includes(cat.id));
       
-      // If no schedules are defined for this category, it's always visible
+      // Se não houver cronogramas configurados para esta categoria, ela está sempre visível
       if (catSchedules.length === 0) return true;
 
-      // If there are schedules, check if any of them are currently active
-      return activeSchedulesMemo.some(s => s.categoryIds.includes(cat.id));
+      // Se houver cronogramas, verifica se há algum ativo no ciclo atual
+      return activeSchedulesMemo.some(s => s && Array.isArray(s.categoryIds) && s.categoryIds.includes(cat.id));
     });
   }, [categories, categorySchedules, activeSchedulesMemo]);
 
@@ -4011,15 +5145,30 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
     const activeCategoryNames = new Set(filteredCategories.map(c => c.name));
     
     const results = cityProducts.filter(product => {
-      // If the product has a category, check if it's active. 
-      const isCategoryActive = !product.category || activeCategoryNames.has(product.category) || activeCategory === 'Todos';
-      if (!isCategoryActive && selectedCategories.length > 0) {
-         if (!selectedCategories.includes(product.category)) return false;
+      // Se houver uma categoria ativa selecionada no slider (diferente de 'Todos'), filtramos estritamente por ela
+      if (activeCategory !== 'Todos') {
+        const prodCat = (product.category || '').toLowerCase().trim();
+        const activeCat = activeCategory.toLowerCase().trim();
+        const matchedCatObj = categories.find(c => c.name.toLowerCase().trim() === activeCat);
+        const matchedCatId = matchedCatObj?.id?.toLowerCase().trim();
+        
+        if (prodCat !== activeCat && (!matchedCatId || prodCat !== matchedCatId)) {
+          return false;
+        }
       }
-      
-      if (product.category && !activeCategoryNames.has(product.category) && activeCategory !== 'Todos') {
-        const cat = categories.find(c => c.name === product.category);
-        if (cat) return false;
+
+      // Se a categoria do produto estiver explicitamente inativa globalmente, não mostramos
+      if (product.category) {
+        const prodCatLower = product.category.toLowerCase().trim();
+        const isGlobalCatActive = categories.some(c => 
+          (c.name.toLowerCase().trim() === prodCatLower || c.id.toLowerCase().trim() === prodCatLower) &&
+          c.status !== 'inactive' && c.active !== false
+        );
+        // Só desconsideramos o produto se ele pertencer a uma categoria cadastrada que está desativada
+        const categoryExists = categories.some(c => c.name.toLowerCase().trim() === prodCatLower || c.id.toLowerCase().trim() === prodCatLower);
+        if (categoryExists && !isGlobalCatActive) {
+          return false;
+        }
       }
 
       const matchesSearch = !searchTerm || 
@@ -4091,6 +5240,65 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
     });
   }, [cityProducts, searchTerm, activeCategory, filteredCategories, selectedCategories, maxPrice, distanceFilter, userLocation, cityRestaurants, categories, allProducts, restaurants, sortBy]);
 
+  const allMatchedProducts = useMemo(() => {
+    if (!searchTerm) return [];
+    
+    const matching = cityProducts.filter(product => {
+      const matchName = product.name.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchDesc = product.description && product.description.toLowerCase().includes(searchTerm.toLowerCase());
+      return matchName || matchDesc;
+    });
+
+    return matching.sort((a, b) => {
+      const resA = restaurants.find(r => r.id === a.restaurantId);
+      const resB = restaurants.find(r => r.id === b.restaurantId);
+      
+      const priceA = a.promoPrice || a.price;
+      const priceB = b.promoPrice || b.price;
+
+      const distA = resA && resA.latitude && resA.longitude && userLocation
+        ? calculateDistance(userLocation.latitude, userLocation.longitude, resA.latitude, resA.longitude)
+        : 999999;
+      const distB = resB && resB.latitude && resB.longitude && userLocation
+        ? calculateDistance(userLocation.latitude, userLocation.longitude, resB.latitude, resB.longitude)
+        : 999999;
+
+      const scoreA = priceA + (distA < 999999 ? distA * 1.5 : 0);
+      const scoreB = priceB + (distB < 999999 ? distB * 1.5 : 0);
+
+      if (scoreA !== scoreB) {
+        return scoreA - scoreB;
+      }
+      return priceA - priceB;
+    });
+  }, [cityProducts, searchTerm, userLocation, restaurants]);
+
+  const searchSuggestionsProducts = useMemo(() => {
+    return allMatchedProducts.slice(0, 5);
+  }, [allMatchedProducts]);
+
+  const favoritedProducts = useMemo(() => {
+    const productLikeIds = new Set(userLikes.filter(l => l.itemType === 'product').map(l => l.itemId));
+    const uniqueProducts = new Map<string, FoodItem>();
+    allProducts.forEach(p => {
+      if (productLikeIds.has(p.id)) {
+        uniqueProducts.set(p.id, p);
+      }
+    });
+    cityProducts.forEach(p => {
+      if (productLikeIds.has(p.id)) {
+        uniqueProducts.set(p.id, p);
+      }
+    });
+    return Array.from(uniqueProducts.values());
+  }, [userLikes, allProducts, cityProducts]);
+
+  const selectedFavoritesTotal = useMemo(() => {
+    return favoritedProducts
+      .filter(p => selectedFavoriteProductIds.includes(p.id))
+      .reduce((sum, p) => sum + (p.promoPrice || p.price), 0);
+  }, [favoritedProducts, selectedFavoriteProductIds]);
+
   const featuredProducts = useMemo(() => {
     return cityProducts.filter(p => {
       if (!p.highlightUntil) return false;
@@ -4141,7 +5349,7 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
         className="min-h-screen bg-bg-app text-slate-900 dark:text-white font-sans pb-20 md:pb-0 transition-colors duration-300 overflow-x-hidden"
       >
       {/* Header */}
-      <header className={`sticky top-0 z-50 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-b border-slate-100 dark:border-slate-800 px-4 md:px-6 py-2 md:py-4 ${isExclusiveView ? 'shadow-sm' : ''}`}>
+      <header className={`sticky top-0 z-50 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-b border-slate-100 dark:border-slate-800 px-4 md:px-6 ${isExclusiveView ? 'pt-0.5 pb-0.5 md:pt-1 md:pb-1' : 'pt-2 pb-1 md:pt-4 md:pb-2 shadow-sm'}`}>
         {fromManager && (
           <div className="max-w-7xl mx-auto mb-2">
             <button 
@@ -4153,17 +5361,17 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
             </button>
           </div>
         )}
-        <div className={`max-w-7xl mx-auto flex flex-col ${isTupaClient ? '' : 'md:flex-row md:items-center'} gap-2 md:gap-4`}>
-          <div className="flex items-center justify-between w-full md:w-auto gap-2">
+        <div className={`max-w-7xl mx-auto flex flex-col ${isTupaClient ? '' : 'md:flex-row md:items-center'} gap-1 md:gap-4`}>
+            <div className="flex items-end justify-between w-full md:w-auto gap-2">
             <div className="flex flex-col min-w-0">
               {isExclusiveView ? (
                 selectedRestaurant && (
-                  <div className="flex items-center space-x-3">
+                  <div className="flex items-center space-x-3 mb-1">
                     <div className="w-10 h-10 md:w-12 md:h-12 rounded-full overflow-hidden border-2 border-blue-600 shadow-sm">
                       <img src={selectedRestaurant.imageUrl || undefined} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                     </div>
                     <div className="flex flex-col min-w-0">
-                      <h1 className="text-sm md:text-xl font-black italic uppercase text-slate-900 dark:text-white leading-tight flex items-center min-w-0">
+                      <h1 className="text-xl md:text-3xl font-black italic uppercase text-slate-900 dark:text-white leading-tight flex items-center min-w-0 ray-effect w-fit">
                         <span className="truncate">{selectedRestaurant.name}</span>
                         <VerifiedBadge />
                       </h1>
@@ -4182,15 +5390,32 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                 )
               ) : (
                 <>
-                  <div 
-                    onClick={() => setShowCitySelector(!showCitySelector)}
-                    className="flex items-center space-x-1 text-[7px] md:text-[10px] font-black uppercase tracking-widest text-slate-400 mb-0.5 truncate cursor-pointer hover:text-blue-500 transition-colors group"
-                  >
-                    <MapPin size={8} className="text-blue-500 shrink-0 group-hover:scale-110 transition-transform" />
-                    <span className="truncate">{activeCity ? activeCity.name : locationInfo}</span>
-                    <ChevronRight size={8} className={`shrink-0 transition-transform ${showCitySelector ? 'rotate-90' : ''}`} />
+                  <div className="flex flex-col mb-1 relative">
+                    <div 
+                      onClick={() => setShowCitySelector(!showCitySelector)}
+                      className="flex items-center space-x-1.5 cursor-pointer group hover:text-blue-500 transition-colors"
+                    >
+                      <MapPin size={10} className="text-blue-500 shrink-0 group-hover:scale-110 transition-transform" />
+                      <span className="text-[10px] md:text-sm font-black uppercase tracking-widest text-slate-900 dark:text-white truncate">
+                        {activeCity ? activeCity.name : 'Selecione sua Cidade'}
+                      </span>
+                      <ChevronRight size={10} className={`text-slate-400 shrink-0 transition-transform ${showCitySelector ? 'rotate-90' : ''}`} />
+                    </div>
+                    
+                    <div className="flex items-center space-x-2 mt-0.5">
+                      <span className="text-[8px] md:text-[9px] font-bold text-slate-400 uppercase tracking-widest truncate max-w-[120px] md:max-w-[200px]">
+                        {locationInfo}
+                      </span>
+                    <button
+                        onClick={() => setIsCitySelectModalOpen(true)}
+                        className="flex items-center gap-1 px-2 py-0.5 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 text-[6px] md:text-[8px] font-black uppercase tracking-widest rounded-full hover:bg-blue-100 transition-colors border border-blue-100 dark:border-blue-900/30"
+                      >
+                        <RefreshCw size={8} />
+                        Mudar localização
+                      </button>
+                    </div>
                   </div>
-                  
+
                   <AnimatePresence>
                     {showCitySelector && (
                       <motion.div 
@@ -4206,11 +5431,23 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                           {uniqueCities.map(city => (
                             <button
                               key={city.id}
-                              onClick={() => {
+                              onClick={async () => {
                                 setActiveCity(city);
+                                setIsManualCity(true);
+                                localStorage.setItem('manual_city_selected', 'true');
+                                localStorage.setItem('active_city_v2_id', city.id);
                                 setShowCitySelector(false);
+                                
+                                if (user?.uid) {
+                                  try {
+                                    await updateProfileData({ cityId: city.id, city: city.name });
+                                    console.log(`[CustomerView] Cidade salva no cadastro do cliente: ${city.name}`);
+                                  } catch (err) {
+                                    console.error("Erro ao salvar cidade no cadastro:", err);
+                                  }
+                                }
                               }}
-                              className={`w-full text-left px-3 py-2.5 rounded-xl text-xs font-bold flex items-center justify-between transition-all ${activeCity?.name === city.name ? 'bg-blue-50 text-blue-600 dark:bg-blue-900/20' : 'hover:bg-slate-50 dark:hover:bg-slate-700/50 text-slate-600 dark:text-slate-300'}`}
+                              className={`w-full text-left px-3 py-2.5 rounded-xl text-xs font-bold flex items-center justify-between transition-all ${activeCity?.id === city.id ? 'bg-blue-50 text-blue-600 dark:bg-blue-900/20' : 'hover:bg-slate-50 dark:hover:bg-slate-700/50 text-slate-600 dark:text-slate-300'}`}
                             >
                               <span>{city.name}</span>
                               {activeCity?.name === city.name && <Check size={12} />}
@@ -4221,22 +5458,11 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                     )}
                   </AnimatePresence>
 
-                  <div className="flex flex-col mb-1">
-                    {userLocation ? (
-                      <span className="text-[7px] font-black uppercase tracking-tighter text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded-full w-fit animate-pulse">
-                        📍 GPS: {userLocation.latitude.toFixed(6)}, {userLocation.longitude.toFixed(6)}
-                      </span>
-                    ) : (
-                      <span className="text-[7px] font-black uppercase tracking-tighter text-red-400 bg-red-50 dark:bg-red-900/20 px-1.5 py-0.5 rounded-full w-fit">
-                        📍 Localização não capturada
-                      </span>
-                    )}
-                  </div>
                   <h1 
                     onClick={() => setView('home')}
-                    className="text-sm md:text-2xl font-black italic uppercase text-blue-gradient cursor-pointer truncate max-w-[150px] md:max-w-none leading-tight py-1"
+                    className="text-sm md:text-2xl font-black italic uppercase text-blue-gradient cursor-pointer truncate max-w-[150px] md:max-w-none leading-tight pt-0.5 pb-0.5"
                   >
-                    {globalSettings?.appName || 'ifood TUPÃ'}
+                    {globalSettings?.appName || 'Xô Fome'}
                   </h1>
                 </>
               )}
@@ -4251,9 +5477,8 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
               )}
             </div>
             
-            {/* Mobile Actions */}
             <div 
-              className={`${isTupaClient ? 'flex' : 'flex md:hidden'} items-center shrink-0`}
+              className={`${isTupaClient ? 'flex' : 'flex md:hidden'} items-center shrink-0 relative z-[60]`}
             >
               {isTupaClient && (
                 <div className="flex items-center">
@@ -4336,84 +5561,17 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
               )}
               
               {!isTupaClient && (
-                isExclusiveView ? (
-                  <div className="flex items-center">
-                    <button 
-                      onClick={() => setView('orders')}
-                      className={`p-2 rounded-xl transition-all relative ${view === 'orders' ? 'bg-brand-blue text-white shadow-lg shadow-brand-blue/20' : 'bg-brand-blue/10 text-brand-blue'} ${attentionCount > 0 ? 'animate-[pulse_1.5s_ease-in-out_infinite]' : ''}`}
-                      style={{ 
-                        marginRight: `${globalSettings?.clientIcons?.ordersIconSpacing !== undefined ? globalSettings.clientIcons.ordersIconSpacing : (globalSettings?.clientIcons?.spacing || 4)}px`,
-                        transform: `scale(${globalSettings?.clientIcons?.ordersIconScale || 1})`
-                      }}
-                    >
-                      {globalSettings?.clientIcons?.ordersIcon ? (
-                        <img src={globalSettings.clientIcons.ordersIcon} alt="Orders" style={{ width: globalSettings.clientIcons.ordersIconSize || globalSettings.clientIcons.size || 18, height: globalSettings.clientIcons.ordersIconSize || globalSettings.clientIcons.size || 18 }} className="object-contain" />
-                      ) : (
-                        <ClipboardList size={globalSettings?.clientIcons?.ordersIconSize || globalSettings?.clientIcons?.size || 18} />
-                      )}
-                      {attentionCount > 0 && (
-                        <motion.span 
-                          initial={{ scale: 0 }}
-                          animate={{ scale: 1 }}
-                          className="absolute -top-1.5 -right-1.5 bg-red-600 text-white text-[8px] font-black w-4 h-4 flex items-center justify-center rounded-full border-2 border-white shadow-sm z-10"
-                        >
-                          {attentionCount}
-                        </motion.span>
-                      )}
-                    </button>
-                    <button 
-                      onClick={() => setIsCartOpen(true)}
-                      className="relative p-2 bg-emerald-50 text-emerald-600 rounded-xl transition-all"
-                      style={{ 
-                        marginRight: `${globalSettings?.clientIcons?.cartIconSpacing !== undefined ? globalSettings.clientIcons.cartIconSpacing : (globalSettings?.clientIcons?.spacing || 4)}px`,
-                        transform: `scale(${globalSettings?.clientIcons?.cartIconScale || 1})`
-                      }}
-                    >
-                      {globalSettings?.clientIcons?.cartIcon ? (
-                        <img src={globalSettings.clientIcons.cartIcon} alt="Cart" style={{ width: globalSettings.clientIcons.cartIconSize || globalSettings.clientIcons.size || 18, height: globalSettings.clientIcons.cartIconSize || globalSettings.clientIcons.size || 18 }} className="object-contain" />
-                      ) : (
-                        <ShoppingBag size={globalSettings?.clientIcons?.cartIconSize || globalSettings?.clientIcons?.size || 18} />
-                      )}
-                      {cart.length > 0 && (
-                        <span className="absolute -top-1 -right-1 bg-emerald-600 text-white text-[8px] font-bold w-4 h-4 flex items-center justify-center rounded-full border-2 border-white">
-                          {cart.reduce((acc, i) => acc + i.quantity, 0)}
-                        </span>
-                      )}
-                    </button>
-                  </div>
-                ) : (
-                  <>
-                    <button 
-                      onClick={() => setIsFilterModalOpen(true)}
-                      className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors relative"
-                      style={{ 
-                        marginRight: `${globalSettings?.clientIcons?.filterIconSpacing !== undefined ? globalSettings.clientIcons.filterIconSpacing : (globalSettings?.clientIcons?.spacing || 4)}px`,
-                        transform: `scale(${globalSettings?.clientIcons?.filterIconScale || 1})`
-                      }}
-                    >
-                      {globalSettings?.clientIcons?.filterIcon ? (
-                        <img src={globalSettings.clientIcons.filterIcon} alt="Filter" style={{ width: globalSettings.clientIcons.filterIconSize || globalSettings.clientIcons.size || 18, height: globalSettings.clientIcons.filterIconSize || globalSettings.clientIcons.size || 18 }} className="object-contain" />
-                      ) : (
-                        <Filter 
-                          size={globalSettings?.clientIcons?.filterIconSize || globalSettings?.clientIcons?.size || 18} 
-                          className={selectedCategories.length > 0 || distanceFilter || maxPrice ? 'text-blue-600' : ''} 
-                          style={{ color: globalSettings?.clientIcons?.color || (selectedCategories.length > 0 || distanceFilter || maxPrice ? undefined : '#3b82f6') }}
-                        />
-                      )}
-                      {(selectedCategories.length > 0 || distanceFilter || maxPrice) && (
-                        <span className="absolute top-1 right-1 w-1.5 h-1.5 bg-brand-blue rounded-full border border-white" />
-                      )}
-                    </button>
-                    <button 
-                      onClick={() => setView('orders')}
-                      className={`p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors relative ${view === 'orders' ? 'text-blue-600' : ''} ${attentionCount > 0 ? 'animate-[pulse_1.5s_ease-in-out_infinite]' : ''}`}
-                      style={{ 
-                        marginRight: `${globalSettings?.clientIcons?.ordersIconSpacing !== undefined ? globalSettings.clientIcons.ordersIconSpacing : (globalSettings?.clientIcons?.spacing || 4)}px`,
-                        transform: `scale(${globalSettings?.clientIcons?.ordersIconScale || 1})`,
-                        color: view === 'orders' ? undefined : (globalSettings?.clientIcons?.color || '#f59e0b')
-                      }}
-                    >
-                      <div className="relative">
+                <div className="flex items-center space-x-1 relative z-[80] bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm p-1 rounded-full">
+                  {isExclusiveView ? (
+                    <>
+                      <button 
+                        onClick={() => setView('orders')}
+                        className={`p-2 rounded-xl transition-all relative ${view === 'orders' ? 'bg-brand-blue text-white shadow-lg shadow-brand-blue/20' : 'bg-brand-blue/10 text-brand-blue'} ${attentionCount > 0 ? 'animate-[pulse_1.5s_ease-in-out_infinite]' : ''}`}
+                        style={{ 
+                          marginRight: `${globalSettings?.clientIcons?.ordersIconSpacing !== undefined ? globalSettings.clientIcons.ordersIconSpacing : (globalSettings?.clientIcons?.spacing || 4)}px`,
+                          transform: `scale(${globalSettings?.clientIcons?.ordersIconScale || 1})`
+                        }}
+                      >
                         {globalSettings?.clientIcons?.ordersIcon ? (
                           <img src={globalSettings.clientIcons.ordersIcon} alt="Orders" style={{ width: globalSettings.clientIcons.ordersIconSize || globalSettings.clientIcons.size || 18, height: globalSettings.clientIcons.ordersIconSize || globalSettings.clientIcons.size || 18 }} className="object-contain" />
                         ) : (
@@ -4423,67 +5581,134 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                           <motion.span 
                             initial={{ scale: 0 }}
                             animate={{ scale: 1 }}
-                            className="absolute -top-1 -right-1 bg-red-600 text-white text-[8px] font-black w-4 h-4 flex items-center justify-center rounded-full border-2 border-white shadow-sm z-10"
+                            className="absolute -top-1.5 -right-1.5 bg-red-600 text-white text-[8px] font-black w-4 h-4 flex items-center justify-center rounded-full border-2 border-white shadow-sm z-10"
                           >
                             {attentionCount}
                           </motion.span>
                         )}
+                      </button>
+                      <button 
+                        onClick={() => setIsCartOpen(true)}
+                        className="relative p-2 bg-emerald-50 text-emerald-600 rounded-xl transition-all"
+                        style={{ 
+                          marginRight: `${globalSettings?.clientIcons?.cartIconSpacing !== undefined ? globalSettings.clientIcons.cartIconSpacing : (globalSettings?.clientIcons?.spacing || 4)}px`,
+                          transform: `scale(${globalSettings?.clientIcons?.cartIconScale || 1})`
+                        }}
+                      >
+                        {globalSettings?.clientIcons?.cartIcon ? (
+                          <img src={globalSettings.clientIcons.cartIcon} alt="Cart" style={{ width: globalSettings.clientIcons.cartIconSize || globalSettings.clientIcons.size || 18, height: globalSettings.clientIcons.cartIconSize || globalSettings.clientIcons.size || 18 }} className="object-contain" />
+                        ) : (
+                          <ShoppingBag size={globalSettings?.clientIcons?.cartIconSize || globalSettings?.clientIcons?.size || 18} />
+                        )}
+                        {cart.length > 0 && (
+                          <span className="absolute -top-1 -right-1 bg-emerald-600 text-white text-[8px] font-bold w-4 h-4 flex items-center justify-center rounded-full border-2 border-white">
+                            {cart.reduce((acc, i) => acc + i.quantity, 0)}
+                          </span>
+                        )}
+                      </button>
+                    </>
+                  ) : (
+                    <div className="flex items-center">
+                      <button 
+                        onClick={() => setIsFilterModalOpen(true)}
+                        className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors relative"
+                        style={{ 
+                          marginRight: `${globalSettings?.clientIcons?.filterIconSpacing !== undefined ? globalSettings.clientIcons.filterIconSpacing : (globalSettings?.clientIcons?.spacing || 4)}px`,
+                          transform: `scale(${globalSettings?.clientIcons?.filterIconScale || 1})`
+                        }}
+                      >
+                        {globalSettings?.clientIcons?.filterIcon ? (
+                          <img src={globalSettings.clientIcons.filterIcon} alt="Filter" style={{ width: globalSettings.clientIcons.filterIconSize || globalSettings.clientIcons.size || 18, height: globalSettings.clientIcons.filterIconSize || globalSettings.clientIcons.size || 18 }} className="object-contain" />
+                        ) : (
+                          <Filter 
+                            size={globalSettings?.clientIcons?.filterIconSize || globalSettings?.clientIcons?.size || 18} 
+                            className={selectedCategories.length > 0 || distanceFilter || maxPrice ? 'text-blue-600' : ''} 
+                            style={{ color: globalSettings?.clientIcons?.color || (selectedCategories.length > 0 || distanceFilter || maxPrice ? undefined : '#3b82f6') }}
+                          />
+                        )}
+                        {(selectedCategories.length > 0 || distanceFilter || maxPrice) && (
+                          <span className="absolute top-1 right-1 w-1.5 h-1.5 bg-brand-blue rounded-full border border-white" />
+                        )}
+                      </button>
+                      <button 
+                        onClick={() => setView('orders')}
+                        className={`p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors relative ${view === 'orders' ? 'text-blue-600' : ''} ${attentionCount > 0 ? 'animate-[pulse_1.5s_ease-in-out_infinite]' : ''}`}
+                        style={{ 
+                          marginRight: `${globalSettings?.clientIcons?.ordersIconSpacing !== undefined ? globalSettings.clientIcons.ordersIconSpacing : (globalSettings?.clientIcons?.spacing || 4)}px`,
+                          transform: `scale(${globalSettings?.clientIcons?.ordersIconScale || 1})`,
+                          color: view === 'orders' ? undefined : (globalSettings?.clientIcons?.color || '#f59e0b')
+                        }}
+                      >
+                        <div className="relative">
+                          {globalSettings?.clientIcons?.ordersIcon ? (
+                            <img src={globalSettings.clientIcons.ordersIcon} alt="Orders" style={{ width: globalSettings.clientIcons.ordersIconSize || globalSettings.clientIcons.size || 18, height: globalSettings.clientIcons.ordersIconSize || globalSettings.clientIcons.size || 18 }} className="object-contain" />
+                          ) : (
+                            <ClipboardList size={globalSettings?.clientIcons?.ordersIconSize || globalSettings?.clientIcons?.size || 18} />
+                          )}
+                          {attentionCount > 0 && (
+                            <motion.span 
+                              initial={{ scale: 0 }}
+                              animate={{ scale: 1 }}
+                              className="absolute -top-1 -right-1 bg-red-600 text-white text-[8px] font-black w-4 h-4 flex items-center justify-center rounded-full border-2 border-white shadow-sm z-10"
+                            >
+                              {attentionCount}
+                            </motion.span>
+                          )}
+                        </div>
+                      </button>
+                      <button 
+                        onClick={() => setIsCartOpen(true)}
+                        className="relative p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors"
+                        style={{ 
+                          marginRight: `${globalSettings?.clientIcons?.cartIconSpacing !== undefined ? globalSettings.clientIcons.cartIconSpacing : (globalSettings?.clientIcons?.spacing || 4)}px`,
+                          transform: `scale(${globalSettings?.clientIcons?.cartIconScale || 1})`,
+                          color: globalSettings?.clientIcons?.color || '#10b981'
+                        }}
+                      >
+                        {globalSettings?.clientIcons?.cartIcon ? (
+                          <img src={globalSettings.clientIcons.cartIcon} alt="Cart" style={{ width: globalSettings.clientIcons.cartIconSize || globalSettings.clientIcons.size || 18, height: globalSettings.clientIcons.cartIconSize || globalSettings.clientIcons.size || 18 }} className="object-contain" />
+                        ) : (
+                          <ShoppingBag size={globalSettings?.clientIcons?.cartIconSize || globalSettings?.clientIcons?.size || 18} />
+                        )}
+                        {cart.length > 0 && (
+                          <span className="absolute top-0.5 right-0.5 bg-emerald-600 text-white text-[7px] font-bold w-3.5 h-3.5 flex items-center justify-center rounded-full">
+                            {cart.reduce((acc, i) => acc + i.quantity, 0)}
+                          </span>
+                        )}
+                      </button>
+                    </div>
+                  )}
+                  <div className="relative z-[60]">
+                    <button 
+                      onClick={() => {
+                        if (!user) {
+                          setTargetRole('customer');
+                          setAuthModalMessage('Entre para gerenciar seu perfil e pedidos');
+                          setIsAuthModalOpen(true);
+                        } else {
+                          setIsProfileModalOpen(true);
+                        }
+                      }}
+                      disabled={isSigningIn}
+                      className="instagram-ring disabled:opacity-50 transition-all active:scale-95"
+                    >
+                      <div className="w-8 h-8 rounded-full overflow-hidden relative z-10 border-2 border-white shadow-md">
+                        <img 
+                          src={profile?.photoURL || user?.photoURL || `https://ui-avatars.com/api/?name=${profile?.displayName || 'USER'}&background=2563eb&color=fff`} 
+                          className="w-full h-full object-cover" 
+                          referrerPolicy="no-referrer"
+                          alt="Profile" 
+                        />
                       </div>
                     </button>
-                    <button 
-                      onClick={() => setIsCartOpen(true)}
-                      className="relative p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors"
-                      style={{ 
-                        marginRight: `${globalSettings?.clientIcons?.cartIconSpacing !== undefined ? globalSettings.clientIcons.cartIconSpacing : (globalSettings?.clientIcons?.spacing || 4)}px`,
-                        transform: `scale(${globalSettings?.clientIcons?.cartIconScale || 1})`,
-                        color: globalSettings?.clientIcons?.color || '#10b981'
-                      }}
-                    >
-                      {globalSettings?.clientIcons?.cartIcon ? (
-                        <img src={globalSettings.clientIcons.cartIcon} alt="Cart" style={{ width: globalSettings.clientIcons.cartIconSize || globalSettings.clientIcons.size || 18, height: globalSettings.clientIcons.cartIconSize || globalSettings.clientIcons.size || 18 }} className="object-contain" />
-                      ) : (
-                        <ShoppingBag size={globalSettings?.clientIcons?.cartIconSize || globalSettings?.clientIcons?.size || 18} />
-                      )}
-                      {cart.length > 0 && (
-                        <span className="absolute top-0.5 right-0.5 bg-emerald-600 text-white text-[7px] font-bold w-3.5 h-3.5 flex items-center justify-center rounded-full">
-                          {cart.reduce((acc, i) => acc + i.quantity, 0)}
-                        </span>
-                      )}
-                    </button>
-                  </>
-                )
-              )}
-              {!isTupaClient && (
-                <div className="relative">
-                <button 
-                  onClick={() => {
-                    if (!user) {
-                      setTargetRole('customer');
-                      setAuthModalMessage('Entre para gerenciar seu perfil e pedidos');
-                      setIsAuthModalOpen(true);
-                    } else {
-                      setIsProfileModalOpen(true);
-                    }
-                  }}
-                  disabled={isSigningIn}
-                  className="instagram-ring disabled:opacity-50"
-                >
-                  <div className="w-7 h-7 rounded-full overflow-hidden relative z-10">
-                    <img 
-                      src={profile?.photoURL || user?.photoURL || `https://ui-avatars.com/api/?name=${profile?.displayName || 'NOME'}&background=2563eb&color=fff`} 
-                      className="w-full h-full object-cover" 
-                      referrerPolicy="no-referrer"
-                      alt="Profile" 
-                    />
                   </div>
-                </button>
-              </div>
-            )}
+                </div>
+              )}
           </div>
         </div>
         
         {!isExclusiveView ? (
-            <div className="flex-1 relative flex items-center">
+            <div className="flex-1 relative flex items-center mt-4 border-t border-slate-100 dark:border-slate-800 pt-4 md:pt-0 md:border-0 md:mt-0 z-10">
               {/* Lightning Ray Effect */}
               <div className="lightning-ray animate-lightning-ray" />
               
@@ -4500,7 +5725,12 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                     return;
                   }
                   setSearchTerm(val);
-                  if (view !== 'home' && view !== 'restaurant') setView('home');
+                  if (view !== 'home' && view !== 'restaurant' && view !== 'search-results') setView('home');
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && searchTerm.trim()) {
+                    setView('search-results');
+                  }
                 }}
               />
               <div className="absolute right-2 top-1/2 -translate-y-1/2">
@@ -4512,115 +5742,131 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                 />
               </div>
 
-              {searchTerm && (
-                <div className="absolute top-full left-0 right-0 mt-2 bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-100 dark:border-slate-800 overflow-hidden z-[100] max-h-[400px] overflow-y-auto">
-                  {/* Restaurants in Search */}
-                  {filteredRestaurants.slice(0, 3).map((restaurant, idx) => (
-                    <div 
-                      key={`search-res-${restaurant.id}-${idx}`}
-                      onClick={() => {
-                        setSelectedRestaurant(restaurant);
-                        setView('restaurant');
-                        setSearchTerm('');
-                      }}
-                      className="p-3 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center space-x-3 cursor-pointer border-b border-slate-50 dark:border-slate-800"
-                    >
-                      <div className="w-10 h-10 rounded-full overflow-hidden border border-slate-100 shrink-0">
-                        <div className="w-full h-full bg-slate-100 flex items-center justify-center text-slate-400">
-                          {(restaurant.logoUrl || restaurant.imageUrl) ? (
-                            <img src={restaurant.logoUrl || restaurant.imageUrl || undefined} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                          ) : (
-                            <Store size={20} className="text-slate-300" />
-                          )}
-                        </div>
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-black uppercase italic text-slate-900 dark:text-white truncate flex items-center">
-                          {restaurant.name}
-                          <VerifiedBadge />
-                        </p>
-                        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Empresa • {restaurant.modality || 'Restaurante'}</p>
-                      </div>
-                    </div>
-                  ))}
-                  
-                  {/* Products in Search */}
-                  {filteredProducts.slice(0, 6).map((product, pIdx) => (
-                    <div 
-                      key={`search-prod-${product.id}-${pIdx}`}
-                      onClick={() => {
-                        const productRestaurant = restaurants.find(r => r.id === product.restaurantId);
-                        if (productRestaurant) {
-                          setSelectedRestaurant(productRestaurant);
-                          setView('restaurant');
+              {searchTerm && view !== 'search-results' && (
+                <div className="absolute top-full left-0 right-0 mt-2 bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-100 dark:border-slate-800 overflow-hidden z-[100] max-h-[420px] overflow-y-auto">
+                  <div className="p-3 bg-slate-50 dark:bg-slate-800/40 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Sugestões de Produtos</span>
+                    {allMatchedProducts.length > 5 && (
+                      <button
+                        onClick={() => setView('search-results')}
+                        className="text-[10px] font-black uppercase tracking-widest text-blue-600 hover:text-blue-700 flex items-center gap-1 hover:underline"
+                      >
+                        Ver todos ({allMatchedProducts.length}) <ChevronRight size={10} />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Products in Search Suggestions (Max 5, cheapest & closest) */}
+                  {searchSuggestionsProducts.map((product, pIdx) => {
+                    const productRestaurant = restaurants.find(r => r.id === product.restaurantId);
+                    const isAvailable = isProductAvailable(product, currentTime, productRestaurant);
+                    const distance = productRestaurant && productRestaurant.latitude && productRestaurant.longitude && userLocation
+                      ? calculateDistance(userLocation.latitude, userLocation.longitude, productRestaurant.latitude, productRestaurant.longitude)
+                      : null;
+
+                    return (
+                      <div 
+                        key={`search-suggest-prod-${product.id}-${pIdx}`}
+                        onClick={() => {
+                          if (!isAvailable) return;
+                          addToCart(product, []);
+                          setCartViewTab('cart');
+                          setIsCartOpen(true);
                           setSearchTerm('');
-                        }
-                      }}
-                      className="p-3 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center space-x-3 cursor-pointer border-b border-slate-50 dark:border-slate-800 last:border-0"
-                    >
-                      <img 
-                        src={product.imageUrl || `https://picsum.photos/seed/${product.id}/100/100`} 
-                        className="w-12 h-12 rounded-xl object-cover"
-                        referrerPolicy="no-referrer"
-                      />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-bold dark:text-white leading-tight truncate">{product.name}</p>
-                        <p className="text-[10px] text-slate-500 dark:text-slate-400 line-clamp-1 mt-0.5">{product.description}</p>
-                        <div className="flex items-center justify-between mt-1">
-                          <div className="flex flex-col">
-                            {(product.promoPrice || (product.isFlashSale && isFlashSaleActive(product))) && (
-                              <span className="text-xs text-red-500 font-bold line-through leading-none">{formatPrice(product.price)}</span>
-                            )}
-                            <p className="text-xs text-emerald-600 font-black italic leading-tight">
-                              {formatPrice(product.isFlashSale ? (isFlashSaleActive(product) ? (product.promoPrice || product.price) : product.price) : (product.promoPrice || product.price))}
+                        }}
+                        className={`p-3 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center space-x-3 cursor-pointer border-b border-slate-50 dark:border-slate-800 ${!isAvailable ? 'opacity-65 cursor-not-allowed' : ''}`}
+                      >
+                        <div className="relative shrink-0 w-12 h-12 rounded-xl overflow-hidden bg-slate-50 dark:bg-slate-800">
+                          <img 
+                            src={product.imageUrl || `https://picsum.photos/seed/${product.id}/100/100`} 
+                            className={`w-full h-full object-cover ${!isAvailable ? 'grayscale opacity-50' : ''}`}
+                            referrerPolicy="no-referrer"
+                          />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between">
+                            <p className="text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider truncate max-w-[120px]">
+                              {productRestaurant?.name || 'Xô Fome'}
                             </p>
+                            {distance !== null && (
+                              <span className="text-[8px] text-slate-400 font-extrabold flex items-center gap-0.5 shrink-0">
+                                <MapPin size={8} className="text-rose-500" />
+                                {distance.toFixed(1)} km
+                              </span>
+                            )}
                           </div>
-                          {product.preparationTimeMinutes && (
-                            <div className="flex items-center space-x-1 text-[10px] text-slate-400 font-bold">
-                              <Clock size={10} />
-                              <span>{product.preparationTimeMinutes} min</span>
+                          <div className="flex items-center justify-between gap-2 mt-0.5">
+                            <p className="text-sm font-bold dark:text-white leading-tight truncate">{product.name}</p>
+                            {!isAvailable && (
+                              <span className="text-[8px] bg-red-100 text-red-600 dark:bg-red-950/40 dark:text-red-400 font-black uppercase tracking-widest px-1.5 py-0.5 rounded leading-none shrink-0 border border-red-200/50 dark:border-red-900/40">
+                                Indisponível
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[10px] text-slate-500 dark:text-slate-400 line-clamp-1 mt-0.5">{product.description}</p>
+                          
+                          <div className="flex items-center justify-between mt-1">
+                            <div className="flex items-baseline space-x-1">
+                              {(product.promoPrice || (product.isFlashSale && isFlashSaleActive(product))) && (
+                                <span className="text-[10px] text-red-500 font-bold line-through">{formatPrice(product.price)}</span>
+                              )}
+                              <p className="text-xs text-emerald-600 dark:text-emerald-400 font-black italic">
+                                {formatPrice(product.isFlashSale ? (isFlashSaleActive(product) ? (product.promoPrice || product.price) : product.price) : (product.promoPrice || product.price))}
+                              </p>
                             </div>
-                          )}
+                            
+                            {product.preparationTimeMinutes && (
+                              <div className="flex items-center space-x-1 text-[9px] text-slate-400 font-bold">
+                                <Clock size={9} />
+                                <span>{product.preparationTimeMinutes} min</span>
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
-                  {filteredProducts.length === 0 && filteredRestaurants.length === 0 && (
+                    );
+                  })}
+
+                  {/* Resturants match notification (optional link, let's keep it simple or allow direct matching) */}
+                  {searchSuggestionsProducts.length === 0 && (
                     <div className="p-6 text-center space-y-4">
                       <div className="w-12 h-12 bg-slate-50 dark:bg-slate-800 rounded-full mx-auto flex items-center justify-center text-slate-300">
-                        <Search size={24} />
+                        <Search size={22} />
                       </div>
                       <div className="space-y-1">
-                        <p className="text-sm font-black uppercase tracking-widest text-slate-400 italic">Nenhum resultado encontrado</p>
-                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Não encontrou o que procurava? Cadastre sua empresa!</p>
+                        <p className="text-xs font-black uppercase tracking-widest text-slate-400 italic">Nenhum resultado encontrado</p>
+                        <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Quer cadastrar sua empresa?</p>
                         <button 
                           onClick={() => {
                             setTargetRole('manager');
                             setAuthModalMessage('Cadastre sua empresa e comece a vender agora!');
                             setIsAuthModalOpen(true);
                           }}
-                          className="mt-4 bg-blue-gradient text-white px-6 py-2 rounded-xl font-black uppercase tracking-widest text-[9px] shadow-lg shadow-blue-500/20"
+                          className="mt-2 bg-blue-gradient text-white px-5 py-1.5 rounded-xl font-black uppercase tracking-widest text-[8px] shadow-lg shadow-blue-500/20"
                         >
                           Fazer Cadastro
                         </button>
-                        {searchSuggestion && (
-                          <div className="mt-4">
-                            <button 
-                              onClick={() => setSearchTerm(searchSuggestion)}
-                              className="text-xs font-bold text-brand-blue hover:underline"
-                            >
-                              Você quis dizer: <span className="italic">"{searchSuggestion}"</span>?
-                            </button>
-                          </div>
-                        )}
                       </div>
+                    </div>
+                  )}
+
+                  {/* See More ("Ver Mais") option */}
+                  {allMatchedProducts.length > 0 && (
+                    <div 
+                      onClick={() => setView('search-results')}
+                      className="p-3 bg-blue-50/50 hover:bg-blue-50 dark:bg-slate-800/80 dark:hover:bg-slate-800 text-center cursor-pointer border-t border-slate-100 dark:border-slate-800 transition-colors"
+                    >
+                      <span className="text-xs font-black uppercase tracking-wider text-blue-600 dark:text-blue-400 flex items-center justify-center gap-1.5">
+                        Ver mais resultados ({allMatchedProducts.length})
+                        <ChevronRight size={14} />
+                      </span>
                     </div>
                   )}
                 </div>
               )}
             </div>
           ) : (
-            <div className="flex-1 relative flex items-center">
+            <div className="flex-1 relative flex items-center mt-4 border-t border-slate-100 dark:border-slate-800 pt-4 md:pt-0 md:border-0 md:mt-0 z-0">
               <Search className="absolute left-4 top-1/2 -translate-y-1/2 opacity-30" size={16} />
               <input 
                 type="text" 
@@ -4712,7 +5958,7 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
           )}
 
             <div 
-              className={`${isTupaClient ? 'hidden' : 'hidden md:flex'} items-center`}
+              className={`${isTupaClient ? 'hidden' : 'hidden md:flex'} items-center relative z-[80]`}
             >
               {isExclusiveView && (
                 <div className="h-8 w-px bg-slate-100 dark:bg-slate-800 mx-2" />
@@ -4732,7 +5978,6 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                   ) : (
                     <Filter size={globalSettings?.clientIcons?.filterIconSize || globalSettings?.clientIcons?.size || 20} className={selectedCategories.length > 0 || distanceFilter || maxPrice ? 'text-blue-600' : ''} />
                   )}
-                  <span className="text-[10px] font-black uppercase tracking-widest">Filtros</span>
                   {(selectedCategories.length > 0 || distanceFilter || maxPrice) && (
                     <span className="absolute -top-1 -right-1 w-2 h-2 bg-brand-blue rounded-full border border-white" />
                   )}
@@ -4762,7 +6007,6 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                     </motion.span>
                   )}
                 </div>
-                <span className="text-[10px] font-black uppercase tracking-widest">Meus Pedidos</span>
               </button>
               <button 
                 onClick={() => setIsCartOpen(true)}
@@ -4777,7 +6021,6 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                 ) : (
                   <ShoppingBag size={globalSettings?.clientIcons?.cartIconSize || globalSettings?.clientIcons?.size || 24} />
                 )}
-                {isExclusiveView && <span className="text-[10px] font-black uppercase tracking-widest">Carrinho</span>}
                 {cart.length > 0 && (
                   <span className="absolute -top-1 -right-1 bg-emerald-600 text-white text-[10px] font-bold w-5 h-5 flex items-center justify-center rounded-full border-2 border-white">
                     {cart.reduce((acc, i) => acc + i.quantity, 0)}
@@ -4823,45 +6066,8 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 md:px-6 py-6 md:py-8">
-        {activeCity && cityRestaurants.length === 0 && restaurants.length > 0 && (
-          <motion.div 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 rounded-3xl p-6 mb-8 flex flex-col md:flex-row items-center justify-between gap-6 shadow-xl shadow-blue-500/5"
-          >
-            <div className="flex items-center gap-4">
-              <div className="w-16 h-16 bg-blue-100 dark:bg-blue-800 rounded-full flex items-center justify-center text-blue-600 dark:text-blue-400 shrink-0">
-                <MapPin size={32} />
-              </div>
-              <div>
-                <h3 className="text-xl font-black uppercase tracking-tight italic text-blue-900 dark:text-white">Nenhum restaurante em {activeCity.name}</h3>
-                <p className="text-sm font-medium text-blue-700 dark:text-blue-300">Ainda não temos parceiros nesta cidade, mas temos em outras regiões!</p>
-              </div>
-            </div>
-            <div className="flex flex-wrap gap-3 justify-center">
-              {Array.from(new Set(restaurants.map(r => r.city).filter(Boolean))).slice(0, 3).map(cityName => {
-                const cityObj = cities.find(c => c.name === cityName);
-                if (!cityObj) return null;
-                return (
-                  <button
-                    key={cityObj.id}
-                    onClick={() => setActiveCity(cityObj)}
-                    className="bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 px-6 py-3 rounded-2xl text-xs font-black uppercase tracking-widest border border-blue-100 dark:border-blue-800 hover:bg-blue-600 hover:text-white transition-all shadow-lg shadow-blue-500/10"
-                  >
-                    Ver {cityName}
-                  </button>
-                );
-              })}
-              <button
-                onClick={() => setShowCitySelector(true)}
-                className="bg-blue-600 text-white px-6 py-3 rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-blue-700 transition-all shadow-lg shadow-blue-500/20"
-              >
-                Mudar Cidade
-              </button>
-            </div>
-          </motion.div>
-        )}
+      <main className={`max-w-7xl mx-auto px-4 md:px-6 ${isExclusiveView ? 'py-3 md:py-4' : 'py-6 md:py-8'}`}>
+
         <AnimatePresence mode="wait">
           {view === 'home' && (
             <motion.div 
@@ -4871,6 +6077,72 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
               exit={{ opacity: 0 }}
               className="space-y-8 md:space-y-12"
             >
+              {/* Banners */}
+              {!isExclusiveView && (cityBanners.length > 0 || (!commonData.isLoaded && restaurants.length === 0)) && (
+                <div className="space-y-4">
+                  <section className="relative h-[180px] md:h-[350px] rounded-[2rem] overflow-hidden shadow-2xl shadow-blue-500/10">
+                    {restaurants.length === 0 && !commonData.isLoaded ? (
+                      <div className="w-full h-full bg-slate-100 dark:bg-slate-800 animate-pulse" />
+                    ) : (
+                      <AnimatePresence mode="wait">
+                        <motion.div
+                          key={cityBanners[currentBannerIndex]?.id}
+                          initial={{ opacity: 0, x: 100 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          exit={{ opacity: 0, x: -100 }}
+                          transition={{ duration: 0.5 }}
+                          className="absolute inset-0 cursor-pointer"
+                          onClick={() => handleBannerClick(cityBanners[currentBannerIndex])}
+                        >
+                          {cityBanners[currentBannerIndex]?.mediaType === 'video' ? (
+                            <video 
+                              src={cityBanners[currentBannerIndex]?.imageUrl || undefined} 
+                              autoPlay 
+                              loop 
+                              muted 
+                              className="w-full h-full object-cover" 
+                              style={{ objectPosition: cityBanners[currentBannerIndex]?.objectPosition || '50% 50%' }}
+                            />
+                          ) : (
+                            <img 
+                              src={cityBanners[currentBannerIndex]?.imageUrl || undefined} 
+                              alt={cityBanners[currentBannerIndex]?.title}
+                              className="w-full h-full object-cover"
+                              style={{ objectPosition: cityBanners[currentBannerIndex]?.objectPosition || '50% 50%' }}
+                              referrerPolicy="no-referrer"
+                            />
+                          )}
+                          <div className="absolute inset-0 bg-gradient-to-t from-slate-900/80 via-transparent to-transparent flex items-end p-6 md:p-12">
+                            <h2 className="text-2xl md:text-5xl font-black text-white uppercase tracking-tighter italic leading-none">
+                              {cityBanners[currentBannerIndex]?.title}
+                            </h2>
+                          </div>
+                        </motion.div>
+                      </AnimatePresence>
+                    )}
+                  </section>
+
+                  {/* Dots indicator underneath the banner slide */}
+                  {cityBanners.length > 1 && (
+                    <div className="flex justify-center items-center space-x-2.5 py-1">
+                      {cityBanners.map((_, idx) => (
+                        <button
+                          key={`banner-dot-${idx}`}
+                          onClick={() => setCurrentBannerIndex(idx)}
+                          className={`w-2 h-2 rounded-full transition-all duration-300 transform hover:scale-125 focus:outline-none ${
+                            idx === currentBannerIndex 
+                              ? 'bg-brand-blue scale-125' 
+                              : 'bg-slate-300 dark:bg-slate-700 hover:bg-slate-400 dark:hover:bg-slate-600'
+                          }`}
+                          style={idx === currentBannerIndex ? { backgroundColor: 'var(--primary-color)' } : {}}
+                          title={`Ver banner ${idx + 1}`}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Flash Sales */}
               {!isExclusiveView && (flashSaleItems.length > 0 || (!commonData.isLoaded && restaurants.length === 0)) && (
                 <section className="space-y-4">
@@ -4993,65 +6265,7 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                 </section>
               )}
 
-              {/* Banners */}
-              {!isExclusiveView && (cityBanners.length > 0 || (!commonData.isLoaded && restaurants.length === 0)) && (
-                <section className="relative h-[180px] md:h-[350px] rounded-[2rem] overflow-hidden shadow-2xl shadow-blue-500/10">
-                  {restaurants.length === 0 && !commonData.isLoaded ? (
-                    <div className="w-full h-full bg-slate-100 dark:bg-slate-800 animate-pulse" />
-                  ) : (
-                    <>
-                      <AnimatePresence mode="wait">
-                        <motion.div
-                          key={cityBanners[currentBannerIndex]?.id}
-                          initial={{ opacity: 0, x: 100 }}
-                          animate={{ opacity: 1, x: 0 }}
-                          exit={{ opacity: 0, x: -100 }}
-                          transition={{ duration: 0.5 }}
-                          className="absolute inset-0 cursor-pointer"
-                          onClick={() => handleBannerClick(cityBanners[currentBannerIndex])}
-                        >
-                          {cityBanners[currentBannerIndex]?.mediaType === 'video' ? (
-                            <video 
-                              src={cityBanners[currentBannerIndex]?.imageUrl || undefined} 
-                              autoPlay 
-                              loop 
-                              muted 
-                              className="w-full h-full object-cover" 
-                              style={{ objectPosition: cityBanners[currentBannerIndex]?.objectPosition || '50% 50%' }}
-                            />
-                          ) : (
-                            <img 
-                              src={cityBanners[currentBannerIndex]?.imageUrl || undefined} 
-                              alt={cityBanners[currentBannerIndex]?.title}
-                              className="w-full h-full object-cover"
-                              style={{ objectPosition: cityBanners[currentBannerIndex]?.objectPosition || '50% 50%' }}
-                              referrerPolicy="no-referrer"
-                            />
-                          )}
-                          <div className="absolute inset-0 bg-gradient-to-t from-slate-900/80 via-transparent to-transparent flex items-end p-6 md:p-12">
-                            <h2 className="text-2xl md:text-5xl font-black text-white uppercase tracking-tighter italic leading-none">
-                              {cityBanners[currentBannerIndex]?.title}
-                            </h2>
-                          </div>
-                        </motion.div>
-                      </AnimatePresence>
-                      
-                      {/* Dots indicator */}
-                      {cityBanners.length > 1 && (
-                        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex space-x-2 z-10">
-                          {cityBanners.map((_, idx) => (
-                            <button
-                              key={`banner-dot-${idx}`}
-                              onClick={() => setCurrentBannerIndex(idx)}
-                              className={`w-2 h-2 rounded-full transition-all ${idx === currentBannerIndex ? 'bg-white w-6' : 'bg-white/40'}`}
-                            />
-                          ))}
-                        </div>
-                      )}
-                    </>
-                  )}
-                </section>
-              )}
+
 
               {/* Modalities Filter */}
               {!isExclusiveView && (
@@ -5127,16 +6341,29 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                             <p className="text-sm font-black uppercase tracking-widest text-slate-400 italic">Não tem nenhuma empresa cadastrada</p>
                             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Abra sua conta agora e comece a lucrar!</p>
                           </div>
-                          <button 
-                            onClick={() => {
-                              setTargetRole('manager');
-                              setAuthModalMessage('Cadastre sua empresa e comece a vender agora!');
-                              setIsAuthModalOpen(true);
-                            }}
-                            className="bg-blue-gradient text-white px-8 py-3 rounded-2xl font-black uppercase tracking-widest text-[10px] shadow-lg shadow-blue-500/20 hover:scale-105 transition-all"
-                          >
-                            Quero me Cadastrar
-                          </button>
+                          {(() => {
+                            const rawPhone = (activeCity?.id 
+                              ? (globalSettings?.citySupportNumbers?.[activeCity.id] || 
+                                 Object.entries(globalSettings?.citySupportNumbers || {}).find(([id]) => {
+                                   const city = cities.find(c => c.id === id);
+                                   return city?.name === activeCity.name;
+                                 })?.[1])
+                              : null) || globalSettings?.appSupportPhone || globalSettings?.companySupportPhone || globalSettings?.supportPhone;
+                            const cleanPhone = rawPhone ? rawPhone.replace(/\D/g, '') : '69999999999';
+                            const finalPhone = cleanPhone.startsWith('55') ? cleanPhone : `55${cleanPhone}`;
+                            const whatsAppLink = `https://wa.me/${finalPhone}?text=${encodeURIComponent('Olá, gostaria de cadastrar minha empresa no Xô Fome!')}`;
+                            
+                            return (
+                              <a 
+                                href={whatsAppLink}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="bg-blue-gradient text-white px-8 py-3 rounded-2xl font-black uppercase tracking-widest text-[10px] shadow-lg shadow-blue-500/20 hover:scale-105 transition-all text-center inline-block"
+                              >
+                                Quero me Cadastrar
+                              </a>
+                            );
+                          })()}
                         </div>
                       )
                     ) : (
@@ -5305,10 +6532,10 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                         }}
                         className="flex flex-col items-center space-y-3 cursor-pointer group flex-shrink-0"
                       >
-                        <div className={`w-16 h-16 md:w-20 md:h-20 rounded-full flex items-center justify-center transition-all duration-300 ${activeCategory === 'Todos' ? 'bg-blue-gradient text-white shadow-xl shadow-blue-500/30' : 'bg-white dark:bg-slate-800 text-slate-400 dark:text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-100 dark:border-slate-700'}`}>
+                        <div className={`w-16 h-16 md:w-20 md:h-20 rounded-full flex items-center justify-center transition-all duration-300 ${activeCategory === 'Todos' ? 'bg-blue-gradient text-white shadow-xl shadow-blue-500/30' : 'bg-white dark:bg-slate-800 text-slate-950 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-100 dark:border-slate-700'}`}>
                           <Utensils size={24} className="md:w-8 md:h-8" />
                         </div>
-                        <span className={`text-[10px] md:text-xs font-black uppercase tracking-widest ${activeCategory === 'Todos' ? 'text-brand-blue' : 'opacity-40 dark:opacity-60'}`}>Todos</span>
+                        <span className="text-[10px] md:text-xs font-black uppercase tracking-widest text-brand-blue opacity-100">Todos</span>
                       </div>
                       <SortableContext 
                         items={Array.from(new Set((isExclusiveView ? restaurantCategories : filteredCategories).map(c => c.id)))}
@@ -5328,25 +6555,23 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                               }}
                               className="flex flex-col items-center space-y-3 cursor-pointer group flex-shrink-0"
                             >
-                              <div className={`w-16 h-16 md:w-20 md:h-20 rounded-full flex items-center justify-center transition-all duration-300 overflow-hidden ${activeCategory === cat.name ? 'bg-blue-gradient text-white shadow-xl shadow-blue-500/30' : 'bg-white dark:bg-slate-800 text-slate-400 dark:text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-100 dark:border-slate-700'}`}>
+                              <div className={`w-16 h-16 md:w-20 md:h-20 rounded-full flex items-center justify-center transition-all duration-300 overflow-hidden ${activeCategory === cat.name ? 'bg-blue-gradient text-white shadow-xl shadow-blue-500/30' : 'bg-white dark:bg-slate-800 text-slate-950 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-100 dark:border-slate-700'}`}>
                                 {cat.imageUrl ? (
                                   <img src={cat.imageUrl || undefined} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                                ) : (
-                                  <Utensils size={24} className="md:w-8 md:h-8" />
-                                )}
+                                ) : null}
                               </div>
                               <div className="flex flex-col items-center">
-                                <span className={`text-[10px] md:text-xs font-black uppercase tracking-widest ${activeCategory === cat.name ? 'text-brand-blue' : 'opacity-40 dark:opacity-60'}`}>{cat.name}</span>
-                                {activeSchedulesMemo.filter(s => s.categoryIds.includes(cat.id)).map(schedule => (
+                                <span className="text-[10px] md:text-xs font-extrabold uppercase tracking-widest text-slate-950 dark:text-slate-950 opacity-100">{cat.name}</span>
+                                {activeSchedulesMemo.filter(s => s && Array.isArray(s.categoryIds) && s.categoryIds.includes(cat.id)).map(schedule => (
                                   <div key={`cat-schedule-${cat.id}-${schedule.id}`} className="flex flex-col items-center">
                                     <span className="text-[8px] font-black text-brand-blue uppercase tracking-widest animate-pulse">
                                       {schedule.name}
                                     </span>
                                     <span className="text-[7px] font-bold text-slate-400">
-                                      Finaliza às {schedule.endTime.split(':').length === 2 ? `${schedule.endTime}:00` : schedule.endTime}
+                                      Finaliza às {schedule && schedule.endTime && typeof schedule.endTime === 'string' ? (schedule.endTime.split(':').length === 2 ? `${schedule.endTime}:00` : schedule.endTime) : '--:--'}
                                     </span>
                                     <span className="text-[7px] font-black text-emerald-500 uppercase">
-                                      {getScheduleTimeRemaining(schedule.endTime)}
+                                      {schedule && typeof schedule.endTime === 'string' ? getScheduleTimeRemaining(schedule.endTime) : ''}
                                     </span>
                                   </div>
                                 ))}
@@ -5678,7 +6903,8 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                       </div>
                     </motion.div>
                   ) : (
-                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-6 md:gap-8">
+                    <>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-6 md:gap-8">
                       {(Array.from(new Map(filteredProducts.map(p => [p.id, p])).values()) as FoodItem[]).map((product, pIdx) => {
                         const productRestaurant = restaurants.find(r => r.id === product.restaurantId);
                         return (
@@ -5781,6 +7007,28 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                       );
                     })}
                     </div>
+                    {hasMoreProducts && (
+                      <div className="flex justify-center pt-8">
+                        <button
+                          onClick={fetchNextProductsBatch}
+                          disabled={isPaginationLoading}
+                          className="flex items-center gap-2 bg-white dark:bg-slate-950 border-2 border-slate-200 dark:border-slate-800 text-slate-800 dark:text-white px-8 py-3.5 rounded-[1.75rem] font-black uppercase tracking-widest text-[11px] shadow-md hover:shadow-xl hover:scale-105 active:scale-95 disabled:opacity-50 transition-all disabled:pointer-events-none italic"
+                        >
+                          {isPaginationLoading ? (
+                            <>
+                              <Loader2 size={16} className="animate-spin text-brand-blue" />
+                              Carregando produtos...
+                            </>
+                          ) : (
+                            <>
+                              <TrendingUp size={14} className="text-emerald-500" />
+                              Ver mais produtos
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    )}
+                    </>
                   )}
                 </section>
               )}
@@ -5821,7 +7069,14 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                           ainda. Quer ser o primeiro? Faça o cadastro agora e fature por ser o pioneiro!
                         </p>
                         <button 
-                          onClick={() => navigate('/manager?tutorial=true', { state: { isRegistering: true } })}
+                          onClick={() => {
+                            if (globalSettings?.businessRegistrationPhone) {
+                              const cleanPhone = globalSettings.businessRegistrationPhone.replace(/\D/g, '');
+                              window.open(`https://wa.me/${cleanPhone}?text=${encodeURIComponent('Olá! Gostaria de cadastrar minha empresa no Xô Fome.')}`, '_blank');
+                            } else {
+                              navigate('/manager?tutorial=true', { state: { isRegistering: true } });
+                            }
+                          }}
                           className="bg-orange-500 hover:bg-orange-600 text-white px-8 py-4 rounded-2xl font-black uppercase tracking-widest text-sm shadow-lg shadow-orange-500/20 transition-all hover:scale-105 active:scale-95"
                         >
                           Fazer cadastro
@@ -5844,7 +7099,14 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                           Ainda temos poucas empresas cadastradas. Quer faturar vendendo seus produtos?
                         </p>
                         <button 
-                          onClick={() => navigate('/manager?tutorial=true', { state: { isRegistering: true } })}
+                          onClick={() => {
+                            if (globalSettings?.businessRegistrationPhone) {
+                              const cleanPhone = globalSettings.businessRegistrationPhone.replace(/\D/g, '');
+                              window.open(`https://wa.me/${cleanPhone}?text=${encodeURIComponent('Olá! Gostaria de cadastrar minha empresa no Xô Fome.')}`, '_blank');
+                            } else {
+                              navigate('/manager?tutorial=true', { state: { isRegistering: true } });
+                            }
+                          }}
                           className="bg-white text-brand-blue px-8 py-4 rounded-2xl font-black uppercase tracking-widest text-sm shadow-lg transition-all hover:scale-105 active:scale-95"
                         >
                           Cadastrar empresa
@@ -5856,6 +7118,164 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
               </section>
             )}
           </motion.div>
+          )}
+
+          {view === 'search-results' && (
+            <motion.div
+              key="search-results"
+              initial={{ opacity: 0, y: 15 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -15 }}
+              className="space-y-8"
+            >
+              {/* Back to home / Header bar */}
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white dark:bg-slate-900 p-6 rounded-[2.5rem] border border-slate-100 dark:border-slate-800 shadow-sm">
+                <div className="flex items-center space-x-4">
+                  <button
+                    onClick={() => setView('home')}
+                    className="p-3 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-2xl transition-all flex items-center justify-center shrink-0 border border-slate-100 dark:border-slate-800"
+                  >
+                    <ArrowLeft size={20} />
+                  </button>
+                  <div>
+                    <h3 className="text-xl md:text-2xl font-black uppercase tracking-tight italic text-blue-900 dark:text-white">
+                      Resultados da Busca
+                    </h3>
+                    <p className="text-xs text-slate-400 font-bold uppercase tracking-widest flex items-center gap-1 mt-0.5">
+                      <Search size={12} className="text-blue-500" />
+                      <span>{allMatchedProducts.length} itens correspondentes para "{searchTerm}"</span>
+                    </p>
+                  </div>
+                </div>
+
+                {/* Switch back or clear */}
+                <button
+                  onClick={() => {
+                    setSearchTerm('');
+                    setView('home');
+                  }}
+                  className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-xl text-xs font-black uppercase tracking-widest transition-all align-self-start md:align-self-auto"
+                >
+                  Limpar pesquisa e voltar
+                </button>
+              </div>
+
+              {/* Matched Products List */}
+              <section className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div className="bg-brand-blue text-white px-4 py-1.5 rounded-full shadow-lg shadow-blue-500/20">
+                    <h4 className="text-[10px] font-black uppercase tracking-widest italic flex items-center gap-1">
+                      <ShoppingBag size={12} />
+                      Produtos ({allMatchedProducts.length})
+                    </h4>
+                  </div>
+                </div>
+
+                {allMatchedProducts.length === 0 ? (
+                  <motion.div 
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="bg-white dark:bg-slate-900 rounded-[3rem] p-12 text-center border-2 border-dashed border-slate-200 dark:border-slate-800 space-y-4"
+                  >
+                    <div className="w-16 h-16 bg-slate-50 dark:bg-slate-800 rounded-full mx-auto flex items-center justify-center text-slate-300">
+                      <Search size={32} />
+                    </div>
+                    <div>
+                      <h4 className="text-base font-black uppercase tracking-tight italic text-slate-800 dark:text-white">Nenhum produto encontrado</h4>
+                      <p className="text-xs text-slate-400 max-w-xs mx-auto mt-1 uppercase tracking-wider font-bold">
+                        Tente pesquisar com termos mais simples ou confira em outra cidade.
+                      </p>
+                    </div>
+                  </motion.div>
+                ) : (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
+                    {allMatchedProducts.map((product) => {
+                      const productRestaurant = restaurants.find(r => r.id === product.restaurantId);
+                      const isAvailable = isProductAvailable(product, currentTime, productRestaurant);
+                      const distance = productRestaurant && productRestaurant.latitude && productRestaurant.longitude && userLocation
+                        ? calculateDistance(userLocation.latitude, userLocation.longitude, productRestaurant.latitude, productRestaurant.longitude)
+                        : null;
+
+                      return (
+                        <div
+                          key={`search-all-prod-${product.id}`}
+                          onClick={() => {
+                            if (!isAvailable) return;
+                            addToCart(product, []);
+                            setCartViewTab('cart');
+                            setIsCartOpen(true);
+                          }}
+                          className={`bg-white dark:bg-slate-900 rounded-[2.5rem] p-4 border-2 border-slate-50 dark:border-slate-800 hover:border-slate-100 dark:hover:border-slate-700 hover:shadow-xl hover:shadow-blue-500/5 transition-all duration-300 flex flex-col h-full group cursor-pointer relative ${!isAvailable ? 'opacity-65 cursor-not-allowed' : ''}`}
+                        >
+                          {/* Image */}
+                          <div className="w-full aspect-square rounded-[1.8rem] overflow-hidden bg-slate-50 dark:bg-slate-800 relative shrink-0 border border-slate-100/50 dark:border-slate-800">
+                            <img
+                              src={product.imageUrl || `https://picsum.photos/seed/${product.id}/200/200`}
+                              className={`w-full h-full object-cover group-hover:scale-105 transition-transform duration-500 ${!isAvailable ? 'grayscale opacity-50' : ''}`}
+                              referrerPolicy="no-referrer"
+                            />
+                            {product.isFlashSale && isFlashSaleActive(product) && isAvailable && (
+                              <div className="absolute top-3 left-3 bg-red-500 text-white px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-widest animate-pulse">
+                                OFERTA
+                              </div>
+                            )}
+                            {!isAvailable && (
+                              <div className="absolute inset-0 bg-black/40 flex items-center justify-center p-3">
+                                <span className="bg-white text-slate-900 px-3 py-1.5 rounded-xl font-black uppercase tracking-widest text-[9px] italic shadow-xl text-center leading-tight">
+                                  {getProductUnavailabilityReason(product, currentTime, productRestaurant) || 'Indisponível'}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="flex-1 flex flex-col justify-between mt-3 space-y-2">
+                            <div className="space-y-1">
+                              <div className="flex items-center justify-between">
+                                <p className="text-[9px] text-blue-600 dark:text-blue-400 font-extrabold uppercase tracking-widest truncate max-w-[120px]">
+                                  {productRestaurant?.name || 'Xô Fome'}
+                                </p>
+                                {distance !== null && (
+                                  <span className="text-[8px] text-slate-400 font-extrabold flex items-center gap-0.5 shrink-0">
+                                    <MapPin size={8} className="text-rose-500" />
+                                    {distance.toFixed(1)} km
+                                  </span>
+                                )}
+                              </div>
+                              <h4 className="text-sm font-black uppercase tracking-tight text-slate-900 dark:text-white line-clamp-1 group-hover:text-blue-600 transition-colors">
+                                {product.name}
+                              </h4>
+                              <p className="text-[10px] text-slate-400 line-clamp-2 leading-snug">
+                                {product.description}
+                              </p>
+                            </div>
+
+                            <div className="flex items-baseline justify-between pt-1 border-t border-slate-50 dark:border-slate-800/60 mt-1">
+                              <div>
+                                {(product.promoPrice || (product.isFlashSale && isFlashSaleActive(product))) && (
+                                  <span className="text-[10px] text-slate-400 line-through block leading-none">
+                                    {formatPrice(product.price)}
+                                  </span>
+                                )}
+                                <span className="text-sm font-black italic text-emerald-600 dark:text-emerald-400 leading-none">
+                                  {formatPrice(product.isFlashSale ? (isFlashSaleActive(product) ? (product.promoPrice || product.price) : product.price) : (product.promoPrice || product.price))}
+                                </span>
+                              </div>
+
+                              {product.preparationTimeMinutes && (
+                                <span className="text-[9px] text-slate-400 font-bold flex items-center gap-0.5 bg-slate-50 dark:bg-slate-800 px-2 py-1 rounded-lg">
+                                  <Clock size={8} />
+                                  {product.preparationTimeMinutes} m
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+            </motion.div>
           )}
 
           {view === 'restaurant' && selectedRestaurant && (
@@ -6702,6 +8122,13 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                                       </span>
                                     </div>
                                   </div>
+                                  <div className="absolute top-3 right-3 z-20">
+                                    <LikeButton 
+                                      itemId={product.id} 
+                                      itemType="product" 
+                                      className="p-2 bg-white/95 backdrop-blur-sm rounded-full shadow-md hover:scale-110 active:scale-95 transition-all text-rose-500 hover:text-rose-600 border border-slate-50"
+                                    />
+                                  </div>
                                 </div>
                                 <div className="p-4 space-y-3">
                                   <div>
@@ -7328,7 +8755,7 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
               transition={{ type: 'spring', damping: 25, stiffness: 200 }}
               className="fixed inset-y-0 left-0 z-[160] w-[85%] max-w-sm bg-white dark:bg-slate-950 shadow-2xl flex flex-col"
             >
-              <div className="p-6 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+              <div className="pt-32 pb-6 px-6 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
                 <div>
                   <h3 className="text-xl font-black uppercase tracking-tighter italic text-blue-gradient">
                     {sidebarType === 'restaurants' ? 'Empresas' : 'Categorias'}
@@ -7504,13 +8931,13 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                         hasManuallySelectedCategory.current = true;
                         setIsSidebarOpen(false);
                       }}
-                      className={`flex flex-col items-center space-y-3 p-6 rounded-3xl transition-all cursor-pointer ${activeCategory === 'Todos' ? 'bg-blue-gradient text-white shadow-xl shadow-blue-500/20' : 'bg-slate-50 dark:bg-slate-900 text-slate-400 dark:text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'}`}
+                      className={`flex flex-col items-center space-y-3 p-6 rounded-3xl transition-all cursor-pointer ${activeCategory === 'Todos' ? 'bg-blue-gradient text-white shadow-xl shadow-blue-500/20' : 'bg-slate-50 dark:bg-slate-900 text-slate-950 dark:text-white hover:bg-slate-100 dark:hover:bg-slate-800'}`}
                     >
                       <Utensils size={32} />
-                      <span className="text-[10px] font-black uppercase tracking-widest">Todos</span>
+                      <span className="text-[10px] font-black uppercase tracking-widest text-brand-blue opacity-100">Todos</span>
                     </div>
-                    {(Array.from(new Map(filteredCategories
-                      .filter(c => c.name.toLowerCase().includes(sidebarSearchTerm.toLowerCase()))
+                    {(Array.from(new Map((filteredCategories || [])
+                      .filter(c => c && c.id && c.name && c.name.toLowerCase().includes((sidebarSearchTerm || '').toLowerCase()))
                       .map(c => [c.id, c])).values()) as Category[]).map((cat, idx) => (
                         <div 
                           key={`sidebar-cat-${cat.id}-${idx}`} 
@@ -7519,22 +8946,20 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                             hasManuallySelectedCategory.current = true;
                             setIsSidebarOpen(false);
                           }}
-                          className={`flex flex-col items-center space-y-3 p-6 rounded-3xl transition-all cursor-pointer overflow-hidden ${activeCategory === cat.name ? 'bg-blue-gradient text-white shadow-xl shadow-blue-500/20' : 'bg-slate-50 dark:bg-slate-900 text-slate-400 dark:text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'}`}
+                          className={`flex flex-col items-center space-y-3 p-6 rounded-3xl transition-all cursor-pointer overflow-hidden ${activeCategory === cat.name ? 'bg-blue-gradient text-white shadow-xl shadow-blue-500/20' : 'bg-slate-50 dark:bg-slate-900 text-slate-950 dark:text-white hover:bg-slate-100 dark:hover:bg-slate-800'}`}
                         >
                           {cat.imageUrl ? (
                             <img src={cat.imageUrl || undefined} className="w-12 h-12 object-cover rounded-xl" referrerPolicy="no-referrer" />
-                          ) : (
-                            <Utensils size={32} />
-                          )}
+                          ) : null}
                           <div className="flex flex-col items-center">
-                            <span className="text-[10px] font-black uppercase tracking-widest text-center">{cat.name}</span>
-                            {activeSchedulesMemo.filter(s => s.categoryIds.includes(cat.id)).map(schedule => (
+                            <span className="text-[10px] font-extrabold uppercase tracking-widest text-center text-slate-950 dark:text-slate-950 opacity-100">{cat.name}</span>
+                            {Array.isArray(activeSchedulesMemo) && activeSchedulesMemo.filter(s => s && Array.isArray(s.categoryIds) && s.categoryIds.includes(cat.id)).map(schedule => (
                               <div key={schedule.id} className="flex flex-col items-center">
                                 <span className="text-[8px] font-black text-brand-blue uppercase tracking-widest animate-pulse">
                                   {schedule.name}
                                 </span>
                                 <span className="text-[7px] font-bold text-slate-400">
-                                  Finaliza às {schedule.endTime.split(':').length === 2 ? `${schedule.endTime}:00` : schedule.endTime}
+                                  Finaliza às {schedule.endTime ? (schedule.endTime.split(':').length === 2 ? `${schedule.endTime}:00` : schedule.endTime) : '--:--'}
                                 </span>
                               </div>
                             ))}
@@ -7753,32 +9178,45 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                   {!routeRestaurantId && (
                     <button 
                       onClick={() => {
-                        setIsProfileModalOpen(false);
-                        navigate('/manager', { state: { isRegistering: profile?.role === 'customer' } });
+                        if (isManagerUnlocked) {
+                          setIsProfileModalOpen(false);
+                          navigate('/manager', { state: { isRegistering: profile?.role === 'customer' } });
+                        } else {
+                          setShowManagerLockModal(true);
+                        }
                       }}
                       onMouseEnter={() => {
                         if (user) prefetchManagerData(user.uid);
                       }}
-                      className="px-6 py-4 bg-white text-brand-blue border-2 border-brand-blue rounded-2xl transition-all text-sm font-black uppercase tracking-widest flex flex-col items-center justify-center space-y-1 animate-pulse-scale shadow-xl shadow-brand-blue/20"
+                      className={`px-6 py-4 rounded-2xl transition-all text-sm font-black uppercase tracking-widest flex flex-col items-center justify-center space-y-1 shadow-xl relative overflow-hidden ${
+                        isManagerUnlocked 
+                        ? 'bg-white text-brand-blue border-2 border-brand-blue animate-pulse-scale shadow-brand-blue/20' 
+                        : 'bg-slate-100 text-slate-400 border-2 border-slate-200 grayscale'
+                      }`}
                     >
                       <div className="flex items-center space-x-2">
-                        <Store size={20} />
+                        {isManagerUnlocked ? <Store size={20} /> : <Lock size={20} />}
                         <span>Empresa</span>
                       </div>
-                      <span className="text-[8px] font-bold opacity-70 lowercase">Painel do restaurante</span>
+                      <span className="text-[8px] font-bold opacity-70 lowercase">
+                        {isManagerUnlocked ? 'Painel do restaurante' : 'Toque para desbloquear'}
+                      </span>
                     </button>
                   )}
-                  <button onClick={() => setIsProfileModalOpen(false)} className="p-2 hover:bg-white/10 rounded-full transition-colors">
+                  <button onClick={() => {
+                    setIsProfileModalOpen(false);
+                    setIsEditingProfile(false);
+                  }} className="p-2 hover:bg-white/10 rounded-full transition-colors">
                     <X size={24} />
                   </button>
                 </div>
               </div>
               
-              <div className="p-8 space-y-8">
+              <div className="p-8 space-y-8 max-h-[70vh] overflow-y-auto no-scrollbar">
                 <div className="flex flex-col items-center space-y-4">
                   <div className="relative group !p-1.5 !rounded-full">
                     <label 
-                      className="w-10 h-10 rounded-full overflow-hidden shadow-xl relative z-10 cursor-pointer hover:opacity-80 transition-opacity border-2 border-white dark:border-slate-800"
+                      className="w-16 h-16 rounded-full overflow-hidden shadow-xl relative z-10 cursor-pointer hover:opacity-80 transition-opacity border-2 border-white dark:border-slate-800"
                     >
                       <img 
                         src={profile?.photoURL || user?.photoURL || `https://ui-avatars.com/api/?name=${profile?.displayName || 'NOME'}&background=2563eb&color=fff`} 
@@ -7794,9 +9232,9 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                       />
                     </label>
                     <label 
-                      className="absolute bottom-0 right-0 p-1.5 bg-brand-blue text-white rounded-full shadow-lg cursor-pointer hover:scale-110 transition-transform z-20"
+                      className="absolute bottom-0 right-0 p-2 bg-brand-blue text-white rounded-full shadow-lg cursor-pointer hover:scale-110 transition-transform z-20 border-2 border-white"
                     >
-                      <Camera size={10} />
+                      <Camera size={12} />
                       <input 
                         type="file" 
                         accept="image/*" 
@@ -7806,60 +9244,164 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                     </label>
                   </div>
                   
-                  <div className="text-center space-y-1">
-                    <div className="flex flex-col items-center justify-center space-y-2">
-                      {isEditingName ? (
-                        <div className="flex items-center space-x-2">
-                          <input
-                            type="text"
-                            value={tempName}
-                            onChange={(e) => setTempName(e.target.value)}
-                            className="bg-slate-100 dark:bg-slate-800 border-none rounded-xl px-4 py-2 text-sm font-bold focus:ring-2 focus:ring-brand-blue/20"
-                            placeholder="Seu nome"
-                            autoFocus
-                          />
-                          <button
-                            onClick={() => {
-                              if (tempName.trim()) {
-                                updateProfileData({ displayName: tempName.trim() });
-                                setIsEditingName(false);
-                              }
-                            }}
-                            className="bg-brand-blue text-white px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest hover:bg-brand-blue/90 transition-colors"
-                          >
-                            Salvar
-                          </button>
-                          <button
-                            onClick={() => setIsEditingName(false)}
-                            className="text-slate-400 hover:text-slate-600 p-2"
-                          >
-                            <X size={16} />
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="flex items-center space-x-2">
-                          <h4 
-                            onClick={() => {
-                              setTempName(profile?.displayName || '');
-                              setIsEditingName(true);
-                            }}
-                            className="text-2xl font-black uppercase tracking-tight italic text-blue-gradient cursor-pointer hover:opacity-80 transition-opacity"
-                          >
+                  <div className="text-center w-full">
+                    {!isEditingProfile ? (
+                      <div className="space-y-4">
+                        <div className="space-y-1">
+                          <h4 className="text-2xl font-black uppercase tracking-tight italic text-blue-gradient">
                             {profile?.displayName || 'Usuário'}
                           </h4>
-                          <button 
-                            onClick={() => {
-                              setTempName(profile?.displayName || '');
-                              setIsEditingName(true);
+                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{profile?.email}</p>
+                          {profile?.cpf && <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">CPF: {profile.cpf}</p>}
+                        </div>
+                        <button 
+                          onClick={() => setIsEditingProfile(true)}
+                          className="px-6 py-2 bg-slate-100 text-slate-600 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-colors flex items-center mx-auto space-x-2"
+                        >
+                          <Edit2 size={14} />
+                          <span>Editar Perfil</span>
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="space-y-3 p-4 bg-slate-50 rounded-3xl border-2 border-slate-100">
+                        <div className="space-y-4">
+                          <div className="text-left space-y-1">
+                            <label className="text-[8px] font-black uppercase tracking-widest text-slate-400 ml-2">Nome Completo</label>
+                            <input
+                              type="text"
+                              value={profileFormData.displayName}
+                              onChange={(e) => setProfileFormData(prev => ({ ...prev, displayName: e.target.value }))}
+                              className="w-full bg-white border-none rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-brand-blue/20"
+                              placeholder="Seu nome"
+                            />
+                          </div>
+                          <div className="text-left space-y-1">
+                            <label className="text-[8px] font-black uppercase tracking-widest text-slate-400 ml-2">E-mail</label>
+                            <input
+                              type="email"
+                              value={profileFormData.email}
+                              onChange={(e) => setProfileFormData(prev => ({ ...prev, email: e.target.value }))}
+                              className="w-full bg-white border-none rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-brand-blue/20"
+                              placeholder="seu@email.com"
+                            />
+                          </div>
+                          <div className="text-left space-y-1">
+                            <label className="text-[8px] font-black uppercase tracking-widest text-slate-400 ml-2">CPF</label>
+                            <input
+                              type="text"
+                              value={profileFormData.cpf}
+                              onChange={(e) => setProfileFormData(prev => ({ ...prev, cpf: e.target.value }))}
+                              className="w-full bg-white border-none rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-brand-blue/20"
+                              placeholder="000.000.000-00"
+                            />
+                          </div>
+                          <div className="text-left space-y-1">
+                            <label className="text-[8px] font-black uppercase tracking-widest text-slate-400 ml-2">Nova Senha (opcional)</label>
+                            <input
+                              type="password"
+                              value={profileFormData.password}
+                              onChange={(e) => setProfileFormData(prev => ({ ...prev, password: e.target.value }))}
+                              className="w-full bg-white border-none rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-brand-blue/20"
+                              placeholder="••••••••"
+                            />
+                          </div>
+                        </div>
+                        <div className="flex space-x-2 pt-2">
+                          <button
+                            onClick={async () => {
+                              try {
+                                const updateData: any = {
+                                  displayName: profileFormData.displayName.trim(),
+                                  cpf: profileFormData.cpf.trim()
+                                };
+                                await updateProfileData(updateData);
+                                
+                                // Se o e-mail mudou, poderíamos tentar updateEmail aqui,
+                                // mas exige re-autenticação em produção. 
+                                // Para este ambiente, o updateDoc no authContext já resolve a exibição.
+                                
+                                setIsEditingProfile(false);
+                                alert("Perfil atualizado com sucesso!");
+                              } catch (e) {
+                                console.error("Error updating profile:", e);
+                                alert("Erro ao atualizar perfil.");
+                              }
                             }}
-                            className="p-1 text-slate-400 hover:text-brand-blue transition-colors"
+                            className="flex-1 bg-brand-blue text-white py-3 rounded-xl text-[10px] font-black uppercase tracking-widest shadow-lg shadow-brand-blue/20"
                           >
-                            <Edit size={14} />
+                            Salvar Dados
+                          </button>
+                          <button
+                            onClick={() => setIsEditingProfile(false)}
+                            className="px-4 bg-white text-slate-400 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest border border-slate-200"
+                          >
+                            Cancelar
                           </button>
                         </div>
-                      )}
-                    </div>
-                    <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">{profile?.email}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Saved Addresses Section */}
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h5 className="text-[10px] font-black uppercase tracking-widest text-slate-400">Endereços Salvos</h5>
+                    <button 
+                      onClick={() => {
+                        setIsProfileModalOpen(false);
+                        setIsAddressModalOpen(true);
+                      }}
+                      className="text-[10px] font-black text-brand-blue uppercase tracking-widest flex items-center space-x-1"
+                    >
+                      <Plus size={14} />
+                      <span>Novo</span>
+                    </button>
+                  </div>
+                  
+                  <div className="space-y-3">
+                    {savedAddresses.length === 0 ? (
+                      <div className="py-8 text-center bg-slate-50 rounded-3xl border-2 border-dashed border-slate-100">
+                        <MapPin size={24} className="mx-auto text-slate-300 mb-2" />
+                        <p className="text-[9px] font-black uppercase text-slate-400">Nenhum endereço salvo</p>
+                      </div>
+                    ) : (
+                      savedAddresses.map((addr) => (
+                        <div 
+                          key={`profile-addr-${addr.id}`}
+                          className={`group relative flex items-center p-4 rounded-3xl border-2 transition-all cursor-pointer ${
+                            addr.isCurrent 
+                              ? 'border-brand-blue bg-blue-50/30' 
+                              : 'border-slate-50 hover:border-slate-100'
+                          }`}
+                          onClick={() => toggleMainAddress(addr.id)}
+                        >
+                          <div className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 ${
+                            addr.isCurrent ? 'bg-brand-blue text-white' : 'bg-slate-100 text-slate-400'
+                          }`}>
+                            <MapPin size={18} />
+                          </div>
+                          <div className="ml-4 flex-1 min-w-0 pr-8">
+                            <h6 className="text-[10px] font-black uppercase tracking-tight truncate">{addr.name}</h6>
+                            <p className="text-[9px] font-bold text-slate-400 truncate">{addr.fullAddress}</p>
+                            {addr.isCurrent && (
+                              <span className="text-[7px] font-black uppercase tracking-widest text-brand-blue bg-white px-2 py-0.5 rounded-full mt-1 inline-block border border-blue-100 shadow-sm">
+                                Principal
+                              </span>
+                            )}
+                          </div>
+                          <button 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setAddressToDelete(addr);
+                            }}
+                            className="absolute right-4 top-1/2 -translate-y-1/2 p-2 text-slate-300 hover:text-red-500 transition-colors"
+                          >
+                            <Trash2 size={18} />
+                          </button>
+                        </div>
+                      ))
+                    )}
                   </div>
                 </div>
 
@@ -7909,6 +9451,108 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                     <span>Sair da Conta</span>
                   </button>
                 </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Manager Lock Modal */}
+      <AnimatePresence>
+        {showManagerLockModal && (
+          <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="bg-white w-full max-w-sm rounded-[2.5rem] p-8 shadow-2xl space-y-6"
+            >
+              <div className="flex flex-col items-center text-center space-y-4">
+                <div className="w-16 h-16 bg-slate-100 text-slate-400 rounded-full flex items-center justify-center border-4 border-slate-50">
+                  <Lock size={32} />
+                </div>
+                <div className="space-y-1">
+                  <h4 className="text-xl font-black uppercase tracking-tight italic text-blue-gradient">Área Restrita</h4>
+                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Insira a senha da empresa</p>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <input
+                  type="password"
+                  value={managerLockPass}
+                  onChange={(e) => setManagerLockPass(e.target.value)}
+                  placeholder={managerPlaceholder}
+                  className="w-full bg-slate-100 border-none rounded-2xl px-6 py-4 text-center text-lg font-black tracking-[0.3em] focus:ring-2 focus:ring-brand-blue/20"
+                  autoFocus
+                />
+                
+                <div className="grid grid-cols-2 gap-3">
+                  <button 
+                    onClick={() => {
+                      if (managerLockPass === '****') {
+                        setIsManagerUnlocked(true);
+                        if (user) localStorage.setItem(`manager_unlocked_${user.uid}`, 'true');
+                        setShowManagerLockModal(false);
+                        setManagerLockPass('');
+                        // Alert success
+                      } else {
+                        alert("Senha incorreta");
+                        setManagerLockPass('');
+                      }
+                    }}
+                    className="py-4 bg-brand-blue text-white rounded-2xl font-black uppercase tracking-widest text-[10px] shadow-lg shadow-brand-blue/20"
+                  >
+                    Desbloquear
+                  </button>
+                  <button 
+                    onClick={() => {
+                      setShowManagerLockModal(false);
+                      setManagerLockPass('');
+                    }}
+                    className="py-4 bg-slate-100 text-slate-400 rounded-2xl font-black uppercase tracking-widest text-[10px]"
+                  >
+                    Voltar
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Address Deletion Confirmation */}
+      <AnimatePresence>
+        {addressToDelete && (
+          <div className="fixed inset-0 z-[130] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              className="bg-white w-full max-w-xs rounded-[2rem] p-8 text-center space-y-6"
+            >
+              <div className="w-16 h-16 bg-red-100 text-red-500 rounded-full flex items-center justify-center mx-auto">
+                <Trash2 size={32} />
+              </div>
+              <div className="space-y-2">
+                <h4 className="text-lg font-black uppercase tracking-tight">Excluir Endereço?</h4>
+                <p className="text-xs text-slate-400 font-medium leading-relaxed">
+                  Tem certeza que deseja apagar o endereço <span className="font-bold text-slate-600 block">{addressToDelete.name}</span>?
+                </p>
+              </div>
+              <div className="flex flex-col space-y-2">
+                <button 
+                  onClick={() => deleteSavedAddress(addressToDelete.id)}
+                  className="w-full py-4 bg-red-500 text-white rounded-2xl font-black uppercase tracking-widest text-[10px] shadow-lg shadow-red-500/20"
+                >
+                  Sim, Excluir
+                </button>
+                <button 
+                  onClick={() => setAddressToDelete(null)}
+                  className="w-full py-4 bg-slate-100 text-slate-400 rounded-2xl font-black uppercase tracking-widest text-[10px]"
+                >
+                  Cancelar
+                </button>
               </div>
             </motion.div>
           </div>
@@ -8129,28 +9773,53 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
               )}
 
               {orderStep === 'confirmation' && (
-                <div className="p-8 space-y-8">
-                  <div className="text-center space-y-2">
-                    <h3 className="text-2xl font-black uppercase tracking-tighter italic text-blue-gradient">Confirmar Localização</h3>
-                    <p className="text-slate-400 text-xs font-medium">Esta é sua localização atual?</p>
+                <div className="p-8 space-y-6">
+                  <div className="text-center space-y-4">
+                    <motion.div 
+                      initial={{ scale: 0 }}
+                      animate={{ scale: 1 }}
+                      className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 mx-auto"
+                    >
+                      <MapPin size={32} />
+                    </motion.div>
+                    <div className="space-y-1">
+                      <h3 className="text-2xl font-black uppercase tracking-tighter italic text-blue-gradient">Seu endereço é este?</h3>
+                      <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest">Confirme o local da entrega</p>
+                    </div>
                   </div>
                   
-                  {/* Location Info */}
-                  <div className="bg-slate-50 p-6 rounded-[2rem] border border-slate-100">
-                    <div className="flex items-center space-x-4">
-                      <div className="w-12 h-12 bg-brand-blue rounded-2xl flex items-center justify-center text-white shadow-lg shadow-brand-blue/20">
+                  {/* Location Info Display with Interaction */}
+                  <div className="bg-slate-50 dark:bg-slate-800 p-6 rounded-[2.5rem] border-2 border-slate-100 dark:border-slate-700 shadow-sm space-y-5">
+                    <div className="flex items-start space-x-4">
+                      <div className="w-12 h-12 bg-white dark:bg-slate-700 rounded-2xl flex items-center justify-center text-blue-500 shadow-sm shrink-0 mt-1">
                         <MapPin size={24} />
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">Endereço de Entrega</p>
-                        <p className="text-sm font-black text-slate-800">{locationInfo}</p>
+                        <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-1">Endereço Identificado</p>
+                        <p className="text-sm font-black text-slate-800 dark:text-white leading-tight italic line-clamp-2">"{locationInfo}"</p>
+                        {userLocation && (
+                          <div className="mt-2 flex items-center gap-1.5">
+                            <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+                            <p className="text-[8px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-widest">Localização Confirmada por GPS</p>
+                          </div>
+                        )}
                       </div>
                     </div>
+                    
+                    <button 
+                      onClick={() => {
+                        setIsCitySelectModalOpen(true);
+                      }}
+                      className="w-full flex items-center justify-center gap-2 p-4 bg-white dark:bg-slate-900 text-blue-600 rounded-2xl font-black uppercase tracking-widest text-[10px] hover:bg-blue-50 transition-all border-2 border-blue-100 dark:border-blue-900/30 shadow-sm"
+                    >
+                      <RefreshCw size={14} />
+                      Alterar Endereço
+                    </button>
                   </div>
 
                   {/* Delivery Options */}
                   <div ref={deliveryOptionsRef} className="space-y-4">
-                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Opções de Entrega</p>
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Opções de Entrega</p>
                     <div className="grid grid-cols-1 gap-3">
                       {(!featureFlags || featureFlags.delivery) && (
                         <button 
@@ -8185,7 +9854,7 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                                 {deliveryOption === 'fast' && <div className="w-2.5 h-2.5 bg-orange-500 rounded-full" />}
                               </div>
                               <div className="text-left">
-                                <p className="text-xs font-black uppercase tracking-tight italic">{globalSettings?.tupaDeliveryName || 'Entrega Tupã (Rápido)'}</p>
+                                <p className="text-xs font-black uppercase tracking-tight italic">{globalSettings?.tupaDeliveryName || 'Entrega Xô Fome (Rápido)'}</p>
                                 <p className="text-[10px] text-slate-500 font-medium">Tempo estimado: {globalSettings?.tupaDeliveryEstimatedTime || '15-25 min'}</p>
                                 {isTupaDeliveryDisabled && (
                                   <p className="text-[8px] text-red-500 font-bold uppercase mt-1">Fora do raio de entrega</p>
@@ -8227,20 +9896,24 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                                             <button
                                               key={`${cat.id}-${catIdx}`}
                                               onClick={() => setSelectedTupaCategories((prev: any) => ({ ...prev, [resId as any]: cat }))}
-                                              className={`flex items-center justify-between p-3 rounded-xl border transition-all ${selectedTupaCategories[resId as any]?.id === cat.id ? 'bg-white border-orange-500 shadow-sm' : 'bg-slate-50 border-transparent hover:bg-slate-100'}`}
+                                              className={`flex items-center gap-3 p-4 rounded-3xl border-2 transition-all ${selectedTupaCategories[resId as any]?.id === cat.id ? 'bg-orange-50 border-orange-500 shadow-lg shadow-orange-500/10' : 'bg-slate-50 border-transparent hover:bg-slate-100 hover:border-slate-200'}`}
                                             >
-                                              <div className="flex items-center space-x-3">
-                                                <div className={`p-2 rounded-lg ${selectedTupaCategories[resId as any]?.id === cat.id ? 'bg-orange-500 text-white' : 'bg-white text-slate-400'}`}>
-                                                  {cat.nome.toLowerCase().includes('moto') ? <Bike size={14} /> : <Car size={14} />}
-                                                </div>
-                                                <div className="text-left">
-                                                  <p className="text-[10px] font-black uppercase tracking-tight italic">{cat.nome}</p>
-                                                  <p className="text-[8px] text-slate-400 font-bold uppercase">{cat.distancia ? `${cat.distancia}km` : 'Estimado'}</p>
+                                              <div className={`p-3 rounded-2xl ${selectedTupaCategories[resId as any]?.id === cat.id ? 'bg-orange-500 text-white' : 'bg-white text-slate-400'} shadow-sm`}>
+                                                {cat.nome.toLowerCase().includes('moto') ? <Bike size={18} /> : <Car size={18} />}
+                                              </div>
+                                              <div className="flex-1 text-left">
+                                                <p className={`text-[11px] font-black uppercase tracking-tight italic leading-tight ${selectedTupaCategories[resId as any]?.id === cat.id ? 'text-orange-950' : 'text-slate-900'}`}>{cat.nome}</p>
+                                                <div className="flex items-center gap-2 mt-0.5">
+                                                  <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest">{cat.distancia > 0 ? `${cat.distancia}km` : 'Estimado'}</p>
+                                                  <div className="w-1 h-1 rounded-full bg-slate-300" />
+                                                  <p className="text-[9px] font-black text-orange-600 uppercase">
+                                                    {formatPrice(cat.preco || 0)}
+                                                  </p>
                                                 </div>
                                               </div>
-                                              <p className="text-xs font-black text-orange-600">
-                                                {formatPrice(cat.preco || cat.estimativa_valor || cat.valor || 0)}
-                                              </p>
+                                              {selectedTupaCategories[resId as any]?.id === cat.id && (
+                                                <CheckCircle2 size={16} className="text-orange-500" />
+                                              )}
                                             </button>
                                           ))}
                                         </div>
@@ -8746,6 +10419,7 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
           <Chat 
             orderId={activeChatOrderId} 
             orderStatus={activeOrders.find(o => o.id === activeChatOrderId)?.status || ''} 
+            isManagerView={false}
             onClose={() => setActiveChatOrderId(null)}
           />
         )}
@@ -8804,13 +10478,13 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setIsCartOpen(false)}
-              className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[60] md:hidden"
+              className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[60]"
             />
             <motion.div 
               initial={{ y: '100%' }}
               animate={{ y: 0 }}
               exit={{ y: '100%' }}
-              className="fixed bottom-0 left-0 right-0 bg-white rounded-t-[3rem] z-[70] flex flex-col h-[90vh] md:hidden safe-bottom"
+              className="fixed bottom-0 left-0 right-0 md:left-auto md:right-0 md:top-0 md:h-screen md:w-[450px] bg-white rounded-t-[3rem] md:rounded-t-none md:rounded-l-[3rem] z-[70] flex flex-col h-[90vh] md:h-screen safe-bottom shadow-2xl"
             >
               <div className="p-6 flex items-center justify-between border-b border-slate-50">
                 <button 
@@ -8834,111 +10508,213 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                 </button>
               </div>
 
-              <div className="flex-1 overflow-y-auto no-scrollbar p-6 space-y-8">
-                <div className="space-y-6">
-                  <h3 className="text-xl font-black uppercase tracking-tighter italic">Sua Sacola</h3>
-                  
-                  {isMixedOrder && (
-                    <div className="bg-orange-50/80 border border-orange-100 p-5 rounded-3xl flex flex-col space-y-4 animate-pulse">
-                      <div className="flex items-start space-x-3">
-                        <AlertCircle size={18} className="text-orange-500 flex-shrink-0 mt-0.5" />
-                        <div className="space-y-2">
-                          <p className="text-[11px] font-black text-orange-900 leading-tight uppercase tracking-tight">
-                            Você selecionou produtos de empresas diferentes. Por isso, a taxa de entrega será maior.
-                          </p>
-                          <p className="text-[10px] font-bold text-orange-800 leading-tight">
-                            Recomendamos que faça o pedido de apenas uma empresa para obter desconto na entrega.
-                          </p>
-                          <div className="bg-white/40 p-3 rounded-xl border border-orange-200/50">
-                            <p className="text-[9px] text-orange-800/80 leading-relaxed italic font-medium">
-                              <span className="font-black uppercase mr-1">Dica:</span>
-                              se o mesmo produto estiver disponível em uma das lojas que você já escolheu, vale a pena fazer todo o pedido nela. Assim, você paga apenas uma taxa de entrega e o valor total fica mais barato.
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="flex flex-wrap gap-3 pt-3 border-t border-orange-200/50">
-                        {uniqueRestaurantsInCart.map((restaurant, idx) => (
-                          <button 
-                            key={`${restaurant.id}-${idx}`} 
-                            onClick={() => handleNavigateToRestaurant(restaurant.id)}
-                            className="flex items-center space-x-2 bg-white/60 px-3 py-1.5 rounded-xl border border-orange-200 shadow-sm hover:bg-white transition-all active:scale-95"
-                          >
-                            <img 
-                              src={restaurant.imageUrl || `https://picsum.photos/seed/${restaurant.id}/100/100`} 
-                              alt={restaurant.name}
-                              className="w-6 h-6 rounded-full object-cover border border-orange-300"
-                              referrerPolicy="no-referrer"
-                            />
-                            <span className="text-[9px] font-black uppercase tracking-widest text-orange-900 truncate max-w-[100px]">
-                              {restaurant.name}
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {cart.length === 0 ? (
-                    <div className="py-12 text-center space-y-4">
-                      <div className="w-16 h-16 bg-slate-50 rounded-full mx-auto flex items-center justify-center text-slate-300">
-                        <ShoppingBag size={32} />
-                      </div>
-                      <p className="text-slate-400 text-xs font-black uppercase tracking-widest">Sacola Vazia</p>
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      {cart.map((item, idx) => {
-                        const itemRestaurant = restaurants.find(r => r.id === item.restaurantId);
-                        return (
-                          <div key={`${item.id}-${idx}-${JSON.stringify(item.selectedAddOns || [])}`} className="flex items-center space-x-4 p-4 bg-slate-50/50 rounded-3xl border border-slate-100/50">
-                            <div className="w-16 h-16 rounded-2xl overflow-hidden border border-slate-100 flex-shrink-0 shadow-sm">
-                              <img 
-                                src={getProductImage(item.id, item.imageUrl)} 
-                                alt={item.name} 
-                                className="w-full h-full object-cover"
-                                referrerPolicy="no-referrer"
-                              />
-                            </div>
-                            <div className="flex-1 min-w-0 space-y-1">
-                              <p className="text-sm font-black uppercase tracking-tight italic truncate text-slate-900">{item.name}</p>
-                              {itemRestaurant && (
-                                <button 
-                                  onClick={() => handleNavigateToRestaurant(itemRestaurant.id)}
-                                  className="flex items-center space-x-2 bg-white px-2 py-1 rounded-lg border border-slate-100 w-fit hover:bg-slate-50 transition-all active:scale-95"
-                                >
-                                  <img 
-                                    src={itemRestaurant.imageUrl || `https://picsum.photos/seed/${itemRestaurant.id}/50/50`} 
-                                    className="w-4 h-4 rounded-full object-cover"
-                                    referrerPolicy="no-referrer"
-                                  />
-                                  <span className="text-[9px] font-black uppercase tracking-widest text-slate-500">
-                                    {itemRestaurant.name}
-                                  </span>
-                                </button>
-                              )}
-                              <div className="flex flex-col">
-                                {(item.promoPrice || (item.isFlashSale && isFlashSaleActive(item))) && (
-                                  <span className="text-xs text-red-500 font-bold line-through leading-none">{formatPrice(item.price)}</span>
-                                )}
-                                <p className="text-xs text-emerald-600 font-bold leading-tight">
-                                  {formatPrice(item.isFlashSale ? (isFlashSaleActive(item) ? (item.promoPrice || item.price) : item.price) : (item.promoPrice || item.price))}
-                                </p>
-                              </div>
-                            </div>
-                            <div className="flex items-center space-x-3 bg-white rounded-full px-4 py-2 shadow-sm border border-slate-100">
-                              <button onClick={() => removeFromCart(item.id, item.selectedAddOns)} className="text-slate-400 hover:text-red-500 transition-colors"><Minus size={14} /></button>
-                              <span className="text-xs font-black w-4 text-center">{item.quantity}</span>
-                              <button onClick={() => addToCart(item, item.selectedAddOns)} className="text-slate-400 hover:text-blue-500 transition-colors"><Plus size={14} /></button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
+              <div className="flex-1 overflow-y-auto no-scrollbar p-6 space-y-6">
+                <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+                  <div className="flex items-center space-x-2">
+                    <ShoppingBag size={20} className="text-slate-800 dark:text-white" />
+                    <h3 className="text-lg font-black uppercase tracking-tighter italic text-slate-800 dark:text-white">Sua Sacola</h3>
+                  </div>
+                  <button 
+                    onClick={() => {
+                      setCartViewTab(prev => prev === 'cart' ? 'favorites' : 'cart');
+                    }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-black uppercase tracking-widest transition-all duration-300 flex items-center gap-1.5 shadow-sm border ${
+                      cartViewTab === 'favorites' 
+                        ? 'bg-red-500 text-white border-red-500 shadow-md shadow-red-500/20' 
+                        : 'bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-400 border-rose-100 dark:border-rose-900/40 hover:bg-rose-100 dark:hover:bg-rose-900/40'
+                    }`}
+                  >
+                    <Heart size={12} className={cartViewTab === 'favorites' ? 'fill-white text-white' : 'fill-rose-500 text-rose-500'} />
+                    Favoritos
+                  </button>
                 </div>
 
-                {cartSuggestions.length > 0 && (
+                {cartViewTab === 'cart' ? (
+                  <div className="space-y-6">
+                    {isMixedOrder && (
+                      <div className="bg-orange-50/80 border border-orange-100 p-5 rounded-3xl flex flex-col space-y-4 animate-pulse">
+                        <div className="flex items-start space-x-3">
+                          <AlertCircle size={18} className="text-orange-500 flex-shrink-0 mt-0.5" />
+                          <div className="space-y-2">
+                            <p className="text-[11px] font-black text-orange-900 leading-tight uppercase tracking-tight">
+                              Você selecionou produtos de empresas diferentes. Por isso, a taxa de entrega será maior.
+                            </p>
+                            <p className="text-[10px] font-bold text-orange-800 leading-tight">
+                              Recomendamos que faça o pedido de apenas uma empresa para obter desconto na entrega.
+                            </p>
+                            <div className="bg-white/40 p-3 rounded-xl border border-orange-200/50">
+                              <p className="text-[9px] text-orange-800/80 leading-relaxed italic font-medium">
+                                <span className="font-black uppercase mr-1">Dica:</span>
+                                se o mesmo produto estiver disponível em uma das lojas que você já escolheu, vale a pena fazer todo o pedido nela. Assim, você paga apenas uma taxa de entrega e o valor total fica mais barato.
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-3 pt-3 border-t border-orange-200/50">
+                          {uniqueRestaurantsInCart.map((restaurant, idx) => (
+                            <button 
+                              key={`${restaurant.id}-${idx}`} 
+                              onClick={() => handleNavigateToRestaurant(restaurant.id)}
+                              className="flex items-center space-x-2 bg-white/60 px-3 py-1.5 rounded-xl border border-orange-200 shadow-sm hover:bg-white transition-all active:scale-95"
+                            >
+                              <img 
+                                src={restaurant.imageUrl || `https://picsum.photos/seed/${restaurant.id}/100/100`} 
+                                alt={restaurant.name}
+                                className="w-6 h-6 rounded-full object-cover border border-orange-300"
+                                referrerPolicy="no-referrer"
+                              />
+                              <span className="text-[9px] font-black uppercase tracking-widest text-orange-900 truncate max-w-[100px]">
+                                {restaurant.name}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {cart.length === 0 ? (
+                      <div className="py-12 text-center space-y-4">
+                        <div className="w-16 h-16 bg-slate-50 rounded-full mx-auto flex items-center justify-center text-slate-300">
+                          <ShoppingBag size={32} />
+                        </div>
+                        <p className="text-slate-400 text-xs font-black uppercase tracking-widest">Sacola Vazia</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        {cart.map((item, idx) => {
+                          const itemRestaurant = restaurants.find(r => r.id === item.restaurantId);
+                          return (
+                            <div key={`${item.id}-${idx}-${JSON.stringify(item.selectedAddOns || [])}`} className="flex items-center space-x-4 p-4 bg-slate-50/50 rounded-3xl border border-slate-100/50">
+                              <div className="w-16 h-16 rounded-2xl overflow-hidden border border-slate-100 flex-shrink-0 shadow-sm">
+                                <img 
+                                  src={getProductImage(item.id, item.imageUrl)} 
+                                  alt={item.name} 
+                                  className="w-full h-full object-cover"
+                                  referrerPolicy="no-referrer"
+                                />
+                              </div>
+                              <div className="flex-1 min-w-0 space-y-1">
+                                <p className="text-sm font-black uppercase tracking-tight italic truncate text-slate-900">{item.name}</p>
+                                {itemRestaurant && (
+                                  <button 
+                                    onClick={() => handleNavigateToRestaurant(itemRestaurant.id)}
+                                    className="flex items-center space-x-2 bg-white px-2 py-1 rounded-lg border border-slate-100 w-fit hover:bg-slate-50 transition-all active:scale-95"
+                                  >
+                                    <img 
+                                      src={itemRestaurant.imageUrl || `https://picsum.photos/seed/${itemRestaurant.id}/50/50`} 
+                                      className="w-4 h-4 rounded-full object-cover"
+                                      referrerPolicy="no-referrer"
+                                    />
+                                    <span className="text-[9px] font-black uppercase tracking-widest text-slate-500">
+                                      {itemRestaurant.name}
+                                    </span>
+                                  </button>
+                                )}
+                                <div className="flex flex-col">
+                                  {(item.promoPrice || (item.isFlashSale && isFlashSaleActive(item))) && (
+                                    <span className="text-xs text-red-500 font-bold line-through leading-none">{formatPrice(item.price)}</span>
+                                  )}
+                                  <p className="text-xs text-emerald-600 font-bold leading-tight">
+                                    {formatPrice(item.isFlashSale ? (isFlashSaleActive(item) ? (item.promoPrice || item.price) : item.price) : (item.promoPrice || item.price))}
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="flex items-center space-x-3 bg-white rounded-full px-4 py-2 shadow-sm border border-slate-100">
+                                <button onClick={() => removeFromCart(item.id, item.selectedAddOns)} className="text-slate-400 hover:text-red-500 transition-colors"><Minus size={14} /></button>
+                                <span className="text-xs font-black w-4 text-center">{item.quantity}</span>
+                                <button onClick={() => addToCart(item, item.selectedAddOns)} className="text-slate-400 hover:text-blue-500 transition-colors"><Plus size={14} /></button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-6">
+                    {favoritedProducts.length === 0 ? (
+                      <div className="py-12 text-center space-y-4">
+                        <div className="w-16 h-16 bg-rose-50 dark:bg-rose-950/30 rounded-full mx-auto flex items-center justify-center text-rose-500">
+                          <Heart size={32} />
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-slate-700 dark:text-slate-300 text-sm font-black uppercase tracking-wide">Nenhum Favorito Ainda</p>
+                          <p className="text-slate-400 text-[10px] uppercase font-bold tracking-wider max-w-[200px] mx-auto leading-normal">
+                            Dê um like em produtos no cardápio para salvá-los aqui!
+                          </p>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        {favoritedProducts.map((item) => {
+                          const itemRestaurant = restaurants.find(r => r.id === item.restaurantId);
+                          const isSelected = selectedFavoriteProductIds.includes(item.id);
+                          
+                          return (
+                            <div 
+                              key={`fav-drawer-item-${item.id}`} 
+                              onClick={() => {
+                                setSelectedFavoriteProductIds(prev => 
+                                  prev.includes(item.id) 
+                                    ? prev.filter(id => id !== item.id) 
+                                    : [...prev, item.id]
+                                );
+                              }}
+                              className={`flex items-center space-x-4 p-4 bg-slate-50/50 dark:bg-slate-900/40 rounded-3xl border transition-all duration-300 cursor-pointer ${
+                                isSelected 
+                                  ? 'border-red-500 bg-red-50/20 dark:border-red-600 dark:bg-red-950/10' 
+                                  : 'border-slate-100/50 dark:border-slate-800 hover:border-slate-200'
+                              }`}
+                            >
+                              {/* Quadradinho uma lacuna checkboxes */}
+                              <div className="flex-shrink-0">
+                                <div 
+                                  className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-all duration-200 ${
+                                    isSelected 
+                                      ? 'bg-red-500 border-red-500 text-white scale-110 shadow-md shadow-red-500/20' 
+                                      : 'border-slate-300 bg-white dark:border-slate-700 dark:bg-slate-800'
+                                  }`}
+                                >
+                                  {isSelected && <Check size={14} strokeWidth={3} />}
+                                </div>
+                              </div>
+
+                              <div className="w-16 h-16 rounded-2xl overflow-hidden border border-slate-100 dark:border-slate-800 flex-shrink-0 shadow-sm">
+                                <img 
+                                  src={getProductImage(item.id, item.imageUrl)} 
+                                  alt={item.name} 
+                                  className="w-full h-full object-cover"
+                                  referrerPolicy="no-referrer"
+                                />
+                              </div>
+
+                              <div className="flex-1 min-w-0 space-y-1">
+                                <p className="text-sm font-black uppercase tracking-tight italic truncate text-slate-900 dark:text-white">{item.name}</p>
+                                {itemRestaurant && (
+                                  <div className="flex items-center space-x-2 bg-white dark:bg-slate-800 px-2 py-1 rounded-lg border border-slate-100 dark:border-slate-800 w-fit">
+                                    <span className="text-[9px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-400">
+                                      {itemRestaurant.name}
+                                    </span>
+                                  </div>
+                                )}
+                                <div className="flex flex-col">
+                                  {(item.promoPrice || (item.isFlashSale && isFlashSaleActive(item))) && (
+                                    <span className="text-xs text-red-500 font-bold line-through leading-none">{formatPrice(item.price)}</span>
+                                  )}
+                                  <p className="text-xs text-emerald-600 dark:text-emerald-400 font-bold leading-tight">
+                                    {formatPrice(item.isFlashSale ? (isFlashSaleActive(item) ? (item.promoPrice || item.price) : item.price) : (item.promoPrice || item.price))}
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {cartViewTab === 'cart' && cartSuggestions.length > 0 && (
                   <div className="space-y-4">
                     <h4 className="text-sm font-black uppercase tracking-widest text-slate-400">Precisa de mais alguma coisa?</h4>
                     <div className="flex space-x-4 overflow-x-auto no-scrollbar pb-4 -mx-6 px-6">
@@ -8980,57 +10756,86 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
               </div>
 
               <div className="p-8 border-t border-slate-50 space-y-4 bg-white">
-                {hasUnmetMinOrder && (
-                  <div className="space-y-4">
-                    {restaurantsWithUnmetMinOrder.map(unmet => (
-                      <motion.div 
-                        key={unmet.id} 
-                        initial={{ scale: 0.95 }}
-                        animate={{ scale: [0.98, 1.02, 0.98] }}
-                        transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut" }}
-                        className="p-5 bg-red-50 rounded-[2.5rem] border-2 border-red-100 flex flex-col space-y-2 shadow-xl shadow-red-500/10"
-                      >
-                        <div className="flex items-center gap-2">
-                          <AlertCircle size={20} className="text-red-500 animate-bounce" />
-                          <h4 className="text-[11px] font-black uppercase tracking-tighter text-red-600 italic">Pedido Mínimo</h4>
-                        </div>
-                        <p className="text-[10px] font-bold text-slate-700 leading-tight">
-                          Esta empresa optou pelo valor mínimo para ativação da <span className="text-emerald-500 font-black italic">ENTREGA GRÁTIS</span> a partir de:
-                        </p>
-                        <div className="bg-white/60 p-3 rounded-2xl flex items-center justify-center">
-                          <span className="text-3xl font-black text-red-600 italic tracking-tighter">
-                            {formatPrice(unmet.minOrderValue)}
-                          </span>
-                        </div>
-                        <div className="text-center pt-1">
-                          <p className="text-[10px] font-black uppercase tracking-widest text-red-400">
-                            Faltam apenas <span className="text-red-600">{formatPrice(unmet.minOrderValue - unmet.currentTotal)}</span> para liberar!
-                          </p>
-                        </div>
-                      </motion.div>
-                    ))}
-                  </div>
+                {cartViewTab === 'cart' ? (
+                  <>
+                    {hasUnmetMinOrder && (
+                      <div className="space-y-4">
+                        {restaurantsWithUnmetMinOrder.map(unmet => (
+                          <motion.div 
+                            key={unmet.id} 
+                            initial={{ scale: 0.95 }}
+                            animate={{ scale: [0.98, 1.02, 0.98] }}
+                            transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut" }}
+                            className="p-5 bg-red-50 rounded-[2.5rem] border-2 border-red-100 flex flex-col space-y-2 shadow-xl shadow-red-500/10"
+                          >
+                            <div className="flex items-center gap-2">
+                              <AlertCircle size={20} className="text-red-500 animate-bounce" />
+                              <h4 className="text-[11px] font-black uppercase tracking-tighter text-red-600 italic">Pedido Mínimo</h4>
+                            </div>
+                            <p className="text-[10px] font-bold text-slate-700 leading-tight">
+                              Esta empresa optou pelo valor mínimo para ativação da <span className="text-emerald-500 font-black italic">ENTREGA GRÁTIS</span> a partir de:
+                            </p>
+                            <div className="bg-white/60 p-3 rounded-2xl flex items-center justify-center">
+                              <span className="text-3xl font-black text-red-600 italic tracking-tighter">
+                                {formatPrice(unmet.minOrderValue)}
+                              </span>
+                            </div>
+                            <div className="text-center pt-1">
+                              <p className="text-[10px] font-black uppercase tracking-widest text-red-400">
+                                Faltam apenas <span className="text-red-600">{formatPrice(unmet.minOrderValue - unmet.currentTotal)}</span> para liberar!
+                              </p>
+                            </div>
+                          </motion.div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-black uppercase tracking-widest text-slate-400">Total</span>
+                      <span className="text-2xl font-black text-emerald-600">{formatPrice(cartTotal)}</span>
+                    </div>
+                    <button 
+                      onClick={() => {
+                        if (cart.length > 0 && !hasUnmetMinOrder) {
+                          setOrderStep('payment');
+                          setIsCartOpen(false);
+                        }
+                      }}
+                      disabled={cart.length === 0 || hasUnmetMinOrder}
+                      className={`w-full py-5 rounded-3xl font-black uppercase tracking-widest text-xs shadow-2xl transition-all disabled:opacity-50 ${
+                        hasUnmetMinOrder 
+                          ? 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none' 
+                          : 'bg-blue-gradient text-white shadow-blue-500/30 animate-pulse'
+                      }`}
+                    >
+                      Continuar
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-black uppercase tracking-widest text-slate-400">Soma Selecionados</span>
+                      <span className="text-2xl font-black text-rose-600 dark:text-rose-400">{formatPrice(selectedFavoritesTotal)}</span>
+                    </div>
+                    <button 
+                      onClick={() => {
+                        const selectedProds = favoritedProducts.filter(p => selectedFavoriteProductIds.includes(p.id));
+                        if (selectedProds.length === 0) return;
+                        
+                        // Add each selected product to the cart with quantity 1
+                        selectedProds.forEach(prod => {
+                          addToCart(prod, []);
+                        });
+                        
+                        // Switch view tab back to 'cart' so they can see finalized order details
+                        setCartViewTab('cart');
+                      }}
+                      disabled={selectedFavoriteProductIds.length === 0}
+                      className="w-full py-5 bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 text-white rounded-3xl font-black uppercase tracking-widest text-xs shadow-2xl shadow-rose-500/20 transition-all disabled:opacity-50"
+                    >
+                      Fazer pedido
+                    </button>
+                  </>
                 )}
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-black uppercase tracking-widest text-slate-400">Total</span>
-                  <span className="text-2xl font-black text-emerald-600">{formatPrice(cartTotal)}</span>
-                </div>
-                <button 
-                  onClick={() => {
-                    if (cart.length > 0 && !hasUnmetMinOrder) {
-                      setOrderStep('payment');
-                      setIsCartOpen(false);
-                    }
-                  }}
-                  disabled={cart.length === 0 || hasUnmetMinOrder}
-                  className={`w-full py-5 rounded-3xl font-black uppercase tracking-widest text-xs shadow-2xl transition-all disabled:opacity-50 ${
-                    hasUnmetMinOrder 
-                      ? 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none' 
-                      : 'bg-blue-gradient text-white shadow-blue-500/30 animate-pulse'
-                  }`}
-                >
-                  Continuar
-                </button>
               </div>
             </motion.div>
           </>
@@ -9172,7 +10977,7 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                   <input 
                     type="tel" 
                     value={checkoutWhatsapp} 
-                    onChange={e => setCheckoutWhatsapp(e.target.value)}
+                    onChange={e => setCheckoutWhatsapp(formatPhone(e.target.value))}
                     placeholder="(00) 00000-0000"
                     className="w-full bg-slate-50 border-none rounded-2xl p-4 text-sm focus:ring-2 focus:ring-blue-500/20"
                   />
@@ -9207,6 +11012,12 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                       alert('Por favor, preencha todos os campos, incluindo o ponto de referência.');
                       return;
                     }
+
+                    if (checkoutWhatsapp.replace(/\D/g, '').length < 11) {
+                      alert('O número de WhatsApp está incompleto ou inválido. Use (00) 00000-0000');
+                      return;
+                    }
+                    
                     setIsSavingCheckoutInfo(true);
                     try {
                       const updatedData = { 
@@ -9508,6 +11319,675 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
           </motion.div>
         )}
       </AnimatePresence>
+        {/* City Selection Modal for Alterar Endereço */}
+        <AnimatePresence>
+          {isCitySelectModalOpen && (
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-md"
+              onClick={() => setIsCitySelectModalOpen(false)}
+            >
+              <motion.div 
+                initial={{ scale: 0.9, opacity: 0, y: 20 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.9, opacity: 0, y: 20 }}
+                className="bg-white dark:bg-slate-900 rounded-[2rem] w-full max-w-sm overflow-hidden shadow-2xl relative border border-slate-100 dark:border-slate-800 p-6 flex flex-col space-y-4"
+                onClick={e => e.stopPropagation()}
+              >
+                {/* Header */}
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-lg font-black uppercase tracking-tighter italic text-blue-gradient">Selecione a cidade</h3>
+                    <p className="text-slate-400 text-[10px] font-bold uppercase tracking-wider">Para abrir o mapa satélite correto</p>
+                  </div>
+                  <button 
+                    onClick={() => setIsCitySelectModalOpen(false)} 
+                    className="p-2 bg-slate-100 dark:bg-slate-800 rounded-full text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-750 transition-colors"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+
+                {/* City List */}
+                <div className="space-y-2 max-h-[300px] overflow-y-auto custom-scrollbar pr-1">
+                  {cities.length > 0 ? (
+                    Array.from(new Map(cities.filter(c => c && c.name).map(city => [city.name.trim().toLowerCase(), city])).values()).map((city: any) => (
+                      <button
+                        key={city.id}
+                        onClick={() => {
+                          setIsCitySelectModalOpen(false);
+                          setLocationModalCity(city);
+                          setIsTypingOnSatellite(false);
+                          setSatelliteSearchQuery('');
+                          setSatelliteSearchResults([]);
+                          setHasSelectedFromSatelliteSearch(false);
+                          const selectedLat = city.lat || -8.7618;
+                          const selectedLng = city.lng || -63.9039;
+                          setSatelliteMapCenter({ lat: selectedLat, lng: selectedLng });
+                          setSatelliteMarkerPosition({ lat: selectedLat, lng: selectedLng });
+                          fetchSatelliteAddress(selectedLat, selectedLng);
+                          setIsSatelliteMapOpen(true);
+                        }}
+                        className="w-full flex items-center justify-between p-4 rounded-2xl bg-slate-50 dark:bg-slate-800 hover:bg-blue-50 dark:hover:bg-blue-900/20 border-2 border-transparent hover:border-blue-500 transition-all text-left group"
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 bg-white dark:bg-slate-700 rounded-xl flex items-center justify-center text-slate-400 group-hover:text-blue-500 group-hover:scale-110 transition-all shadow-sm">
+                            <MapIcon size={18} className="group-hover:text-blue-500 transition-colors" />
+                          </div>
+                          <div>
+                            <p className="text-xs font-black uppercase tracking-tight text-slate-800 dark:text-white">{city.name}</p>
+                            <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">Toque para selecionar</p>
+                          </div>
+                        </div>
+                        <ChevronRight size={16} className="text-slate-300 group-hover:text-blue-500 transition-colors" />
+                      </button>
+                    ))
+                  ) : (
+                    <p className="text-xs text-slate-500 text-center py-4">Nenhuma cidade disponível</p>
+                  )}
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+        {/* Satellite Map Selection Modal */}
+        <AnimatePresence>
+          {isSatelliteMapOpen && (
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[120] flex items-center justify-center md:p-4 bg-slate-900/80 backdrop-blur-md"
+              onClick={() => setIsSatelliteMapOpen(false)}
+            >
+              <motion.div 
+                initial={{ scale: 0.95, opacity: 0, y: 20 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.95, opacity: 0, y: 20 }}
+                className="bg-white dark:bg-slate-900 w-full h-full md:max-w-5xl md:h-[90vh] md:rounded-[2.5rem] shadow-2xl relative overflow-hidden flex flex-col"
+                onClick={e => e.stopPropagation()}
+              >
+                {/* Header */}
+                <div className="p-6 border-b border-slate-100 dark:border-slate-800 shrink-0">
+                  <div className="flex items-center justify-between mb-2">
+                    <div>
+                      <h3 className="text-xl font-black uppercase tracking-tighter italic text-blue-gradient">Qual sua localização?</h3>
+                      <p className="text-slate-400 text-[9px] font-bold uppercase tracking-wider">Arraste o mapa para posicionar o alfinete 📍 no local de entrega</p>
+                    </div>
+                    <button 
+                      onClick={() => setIsSatelliteMapOpen(false)} 
+                      className="p-3 bg-slate-100 dark:bg-slate-800 rounded-full text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-750 transition-colors"
+                    >
+                      <X size={18} />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Map Area */}
+                <div className="flex-1 relative overflow-hidden bg-slate-950">
+                  <MapContainer
+                    center={[satelliteMapCenter.lat, satelliteMapCenter.lng]}
+                    zoom={17}
+                    style={{ width: '100%', height: '100%', zIndex: 0 }}
+                    zoomControl={false}
+                    attributionControl={false}
+                  >
+                    <TileLayer
+                      attribution='&copy; Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
+                      url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+                    />
+                    {/* Camada híbrida transparente com vias de trânsito e estradas */}
+                    <TileLayer
+                      attribution='&copy; Esri, HERE, Garmin, mapmyIndia, © OpenStreetMap contributors'
+                      url="https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}"
+                      opacity={0.9}
+                    />
+                    {/* Camada híbrida transparente contendo nomes de bairros, comércios, empresas e pontos de interesse */}
+                    <TileLayer
+                      attribution='&copy; Esri, HERE, Garmin, © OpenStreetMap contributors'
+                      url="https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"
+                      opacity={1.0}
+                    />
+                    <SatelliteMapEvents 
+                      onCenterChange={(center) => {
+                        setSatelliteMarkerPosition(center);
+                        fetchSatelliteAddress(center.lat, center.lng);
+                      }}
+                    />
+                    <MapController center={satelliteMapCenter} />
+                  </MapContainer>
+
+                  {/* Absolute Search Input floating over the map */}
+                  {isTypingOnSatellite && (
+                    <motion.div 
+                      initial={{ opacity: 0, y: -15 }} 
+                      animate={{ opacity: 1, y: 0 }}
+                      className="absolute top-4 left-4 right-4 z-[100] max-w-lg mx-auto pointer-events-auto"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={satelliteSearchQuery}
+                          onChange={(e) => {
+                            setSatelliteSearchQuery(e.target.value);
+                            handleSatelliteAddressSearch(e.target.value);
+                          }}
+                          placeholder="Digite o endereço..."
+                          className="w-full px-5 py-4 bg-white dark:bg-slate-900 rounded-2xl border-2 border-blue-500 focus:outline-none text-xs font-black shadow-2xl dark:text-white placeholder-slate-400 text-slate-800 focus:border-blue-600 transition-all text-center uppercase tracking-widest animate-pulse focus:animate-none"
+                          style={{ animationDuration: '2s' }}
+                          autoFocus
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                        <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2 text-slate-400">
+                          {isSearchingSatelliteQuery ? (
+                            <Loader2 size={16} className="animate-spin text-blue-500" />
+                          ) : (
+                            <Search size={16} />
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Autocomplete suggestions lists */}
+                      {satelliteSearchResults.length > 0 && (
+                        <div className="mt-2 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl max-h-[180px] overflow-y-auto shadow-2xl divide-y divide-slate-100 dark:divide-slate-800 z-[110] relative" onClick={(e) => e.stopPropagation()}>
+                          {satelliteSearchResults.map((res: any, idx: number) => (
+                            <button
+                              key={idx}
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const lat = parseFloat(res.lat);
+                                const lng = parseFloat(res.lon);
+                                if (!isNaN(lat) && !isNaN(lng)) {
+                                  setSatelliteMapCenter({ lat, lng });
+                                  setSatelliteMarkerPosition({ lat, lng });
+                                  setSatelliteAddress(res.display_name || res.name);
+                                  setHasSelectedFromSatelliteSearch(true);
+                                  setSatelliteSearchResults([]);
+                                }
+                              }}
+                              className="w-full text-left p-3.5 hover:bg-slate-50 dark:hover:bg-slate-800/80 transition-colors flex items-center gap-2.5"
+                            >
+                              <MapPin size={14} className="text-blue-500 shrink-0" />
+                              <div className="min-w-0">
+                                <p className="text-[11px] font-black italic text-slate-800 dark:text-white leading-tight truncate">
+                                  {res.name}
+                                </p>
+                                <p className="text-[8px] font-bold text-slate-400 uppercase tracking-wider truncate">
+                                  {[res.address?.neighbourhood, res.address?.city].filter(Boolean).join(' - ')}
+                                </p>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </motion.div>
+                  )}
+
+                  {/* Physical Center Fixed Pin Overlay */}
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-[10] select-none">
+                     <div className="flex flex-col items-center -translate-y-5">
+                        <motion.div 
+                          animate={{ y: isSearchingSatelliteAddress ? [-3, 3, -3] : 0 }}
+                          transition={{ duration: 1.2, repeat: Infinity, ease: "easeInOut" }}
+                          className="text-4xl filter drop-shadow-[0_8px_10px_rgba(0,0,0,0.6)]"
+                        >
+                          📍
+                        </motion.div>
+                        <div className="w-2.5 h-1 bg-black/60 rounded-full blur-[1px] mt-1 shrink-0" />
+                     </div>
+                  </div>
+
+                  {/* Top-Right GPS Quick Action Button */}
+                  <div className="absolute top-4 right-4 z-[10]">
+                     <button
+                       type="button"
+                       onClick={() => {
+                         if ("geolocation" in navigator) {
+                           navigator.geolocation.getCurrentPosition(
+                             (pos) => {
+                               const posCo = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+                               setSatelliteMapCenter(posCo);
+                               setSatelliteMarkerPosition(posCo);
+                               fetchSatelliteAddress(pos.coords.latitude, pos.coords.longitude);
+                             },
+                             (err) => console.error("GPS error:", err),
+                             { enableHighAccuracy: true, timeout: 10000 }
+                           );
+                         }
+                       }}
+                       className="p-3 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md rounded-2xl shadow-xl border border-slate-100 dark:border-slate-800 text-blue-600 dark:text-blue-400 font-bold flex items-center justify-center animate-bounce shadow-blue-500/10"
+                     >
+                       <Navigation size={18} />
+                     </button>
+                  </div>
+                </div>
+
+                {/* Footer details & Action */}
+                <div className="p-6 bg-slate-50 dark:bg-slate-900 border-t border-slate-100 dark:border-slate-800 shrink-0 space-y-4">
+                  {/* Alert Phrase */}
+                  {hasSelectedFromSatelliteSearch && (
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.95 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      className="bg-amber-500/10 border-2 border-amber-500/30 text-amber-700 dark:text-amber-400 p-3.5 rounded-2.5xl text-[10px] font-black uppercase tracking-wider text-center flex items-center justify-center gap-2 animate-pulse leading-snug"
+                    >
+                      <span>🏠</span>
+                      <span>Essa é sua casa? Confirme com atenção para a entrega não demorar</span>
+                    </motion.div>
+                  )}
+
+
+
+                  <div className="flex items-start space-x-3.5 bg-white dark:bg-slate-800 p-4 rounded-3xl border border-slate-100 dark:border-slate-750 shadow-sm min-h-[72px]">
+                    <div className="w-10 h-10 bg-blue-100 dark:bg-blue-900/30 rounded-2xl flex items-center justify-center text-blue-600 dark:text-blue-400 shrink-0 mt-0.5">
+                      {isSearchingSatelliteAddress ? (
+                        <Loader2 size={20} className="animate-spin" />
+                      ) : (
+                        <MapPin size={20} />
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[8px] font-black uppercase tracking-widest text-slate-400 mb-0.5">Endereço Selecionado</p>
+                      <p className="text-xs font-black text-slate-800 dark:text-white leading-tight italic line-clamp-2">
+                        {isSearchingSatelliteAddress ? 'Identificando localização...' : `"${satelliteAddress}"`}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (isTypingOnSatellite) {
+                          setIsTypingOnSatellite(false);
+                          setSatelliteSearchQuery('');
+                          setSatelliteSearchResults([]);
+                        } else {
+                          setIsTypingOnSatellite(true);
+                        }
+                      }}
+                      className="flex-1 py-4 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-2xl font-black uppercase tracking-widest text-[9px] hover:bg-slate-200 transition-all text-center flex items-center justify-center gap-1.5"
+                    >
+                      <Search size={14} />
+                      {isTypingOnSatellite ? 'Arrastar Mapa' : 'Digitar Endereço'}
+                    </button>
+                    
+                    <button
+                      type="button"
+                      onClick={confirmSatelliteLocation}
+                      disabled={isSearchingSatelliteAddress}
+                      className="flex-[2] py-4 bg-blue-600 disabled:bg-blue-400 text-white rounded-2xl font-black uppercase tracking-widest text-[10px] shadow-xl shadow-blue-500/20 hover:scale-[1.01] hover:bg-blue-700 transition-all flex items-center justify-center gap-1.5"
+                    >
+                      <CheckCircle2 size={14} />
+                      Confirmar Endereço
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Address Selection Modal */}
+        <AnimatePresence>
+          {isAddressModalOpen && (
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-md"
+              onClick={() => setIsAddressModalOpen(false)}
+            >
+              <motion.div 
+                initial={{ scale: 0.9, opacity: 0, y: 20 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.9, opacity: 0, y: 20 }}
+                className="bg-white dark:bg-slate-900 rounded-[2.5rem] w-full max-w-lg max-h-[85vh] shadow-2xl relative overflow-hidden flex flex-col"
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="relative h-40 md:h-48 bg-blue-600 flex items-center justify-center overflow-hidden">
+                  <div className="absolute inset-0 opacity-40 pointer-events-none">
+                     <img src="https://images.unsplash.com/photo-1518186285589-2f7649de83e0?auto=format&fit=crop&q=80&w=1000" className="w-full h-full object-cover scale-110" alt="Brazil Map" />
+                     <div className="absolute inset-0 bg-gradient-to-t from-blue-600/80 to-transparent" />
+                  </div>
+                  <div className="relative z-10 text-center px-4">
+                    <motion.div 
+                      initial={{ y: 10, opacity: 0 }}
+                      animate={{ y: 0, opacity: 1 }}
+                      className="w-20 h-20 bg-white/20 backdrop-blur-xl rounded-[2rem] shadow-2xl flex items-center justify-center text-white mx-auto mb-3 border border-white/30"
+                    >
+                       <MapPin size={40} className="drop-shadow-lg" />
+                    </motion.div>
+                    <h3 className="text-2xl font-black uppercase italic tracking-tighter text-white drop-shadow-md">Qual sua localização?</h3>
+                    <p className="text-white/70 text-[10px] font-bold uppercase tracking-[0.2em] mt-1">Sua fome não pode esperar</p>
+                  </div>
+                  <button onClick={() => setIsAddressModalOpen(false)} className="absolute top-4 right-4 p-2 bg-white/50 dark:bg-black/50 backdrop-blur-md rounded-full hover:bg-white transition-colors">
+                    <X size={20} />
+                  </button>
+                </div>
+
+                <div className="p-4 md:p-6 flex-1 flex flex-col overflow-hidden">
+                  {!locationModalCity ? (
+                    <div className="flex-1 flex flex-col overflow-hidden">
+                      <div className="mb-4">
+                        <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Primeiro, selecione sua cidade:</p>
+                        <h4 className="text-xl font-black text-slate-800 dark:text-white leading-tight">Em qual cidade você está?</h4>
+                      </div>
+                      
+                      <div className="flex-1 overflow-y-auto custom-scrollbar space-y-2 pr-1 pb-4">
+                        {cities.length > 0 ? (
+                          // Remove duplicates by Name (ensure case-insensitive or exact)
+                          Array.from(new Map(cities.map(city => [city.name.trim().toLowerCase(), city])).values()).map((city: any) => (
+                            <button
+                              key={city.id}
+                              onClick={() => setLocationModalCity(city)}
+                              className="w-full flex items-center justify-between p-5 rounded-3xl bg-slate-50 dark:bg-slate-800 hover:bg-blue-50 dark:hover:bg-blue-900/20 border-2 border-transparent hover:border-blue-500 transition-all text-left group"
+                            >
+                              <div className="flex items-center gap-4">
+                                <div className="w-12 h-12 bg-white dark:bg-slate-700 rounded-2xl flex items-center justify-center text-slate-400 group-hover:text-blue-500 group-hover:scale-110 transition-all shadow-sm">
+                                  <Store size={24} />
+                                </div>
+                                <div>
+                                  <p className="text-sm font-black uppercase tracking-tight text-slate-800 dark:text-white">{city.name}</p>
+                                  <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Selecionar esta cidade</p>
+                                </div>
+                              </div>
+                              <ChevronRight size={20} className="text-slate-300 group-hover:text-blue-500 transition-colors" />
+                            </button>
+                          ))
+                        ) : (
+                          <div className="py-20 text-center">
+                            <Loader2 className="animate-spin text-blue-500 mx-auto mb-4" size={32} />
+                            <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Carregando cidades disponíveis...</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex-1 flex flex-col overflow-hidden">
+                      {isConfirmingLocation ? (
+                        <div className="flex-1 flex flex-col overflow-hidden">
+                           <div className="mb-4 flex items-center justify-between">
+                              <div>
+                                <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Verifique os detalhes</p>
+                                <h4 className="text-lg font-black text-slate-800 dark:text-white leading-tight">
+                                   {(selectedAddressResult?.address?.road || selectedAddressResult?.name || 'Localização selecionada')}
+                                </h4>
+                                <p className="text-[11px] font-medium text-blue-500 mt-1 flex items-center gap-1.5">
+                                   <MapPin size={12} />
+                                   {selectedAddressResult?.address?.neighbourhood || 'Bairro não identificado'}
+                                </p>
+                              </div>
+                              <button 
+                                onClick={() => setIsConfirmingLocation(false)}
+                                className="p-2 bg-slate-100 dark:bg-slate-800 rounded-xl text-slate-500"
+                              >
+                                <ArrowLeft size={18} />
+                              </button>
+                           </div>
+                           
+                           <div className="flex-1 rounded-[2rem] overflow-hidden border-2 border-slate-100 dark:border-slate-800 relative shadow-inner">
+                              <MapContainer
+                                center={[mapCenter?.lat || -8.7619, mapCenter?.lng || -63.9039]}
+                                zoom={zoom}
+                                style={{ width: '100%', height: '100%', zIndex: 0 }}
+                                zoomControl={false}
+                                attributionControl={false}
+                              >
+                                <TileLayer
+                                  url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+                                />
+                                <TileLayer
+                                  attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                                  url="https://{s}.tile.openstreetmap.org/{z}/{y}/{x}.png"
+                                  opacity={0.3}
+                                />
+                                {markerPosition && (
+                                  <>
+                                    <Marker position={[markerPosition.lat, markerPosition.lng]} />
+                                    <MapController center={markerPosition} />
+                                  </>
+                                )}
+                                <MapEvents 
+                                  onCenterChange={(center) => {
+                                    setMarkerPosition(center);
+                                    setSelectedAddressResult(null);
+                                  }}
+                                  onZoomChange={(zoomValue) => setZoom(zoomValue)} 
+                                />
+                              </MapContainer>
+                           </div>
+
+                           <div className="mt-6">
+                              <button 
+                                onClick={confirmLocation}
+                                disabled={isSearchingAddress}
+                                className="w-full py-4 bg-blue-600 text-white rounded-2xl font-black uppercase tracking-widest text-xs shadow-xl shadow-blue-500/30 flex items-center justify-center gap-2 hover:bg-blue-700 transition-all disabled:opacity-50"
+                              >
+                                {isSearchingAddress ? <Loader2 className="animate-spin" size={18} /> : <CheckCircle2 size={18} />}
+                                Confirmar Localização
+                              </button>
+                           </div>
+                        </div>
+                      ) : (
+                        <div className="flex-1 flex flex-col overflow-hidden">
+                          <div className="flex items-center justify-between mb-4">
+                            <div className="flex items-center gap-2">
+                               <div className="px-3 py-1 bg-blue-100 dark:bg-blue-900/30 rounded-full">
+                                  <p className="text-[9px] font-black uppercase tracking-widest text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
+                                    <Store size={10} />
+                                    {locationModalCity.name}
+                                  </p>
+                               </div>
+                            </div>
+                            <button 
+                              onClick={() => {
+                                setLocationModalCity(null);
+                                setAddressSearchQuery('');
+                                setAddressSearchResults([]);
+                              }}
+                              className="text-[9px] font-black uppercase tracking-widest text-slate-400 hover:text-blue-500 flex items-center gap-1 transition-colors"
+                            >
+                              Trocar Cidade
+                              <RefreshCw size={10} />
+                            </button>
+                          </div>
+
+                          <div className="relative mb-6">
+                            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                            <input 
+                              type="text"
+                              placeholder={`Digite seu endereço em ${locationModalCity.name}...`}
+                              value={addressSearchQuery}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setAddressSearchQuery(val);
+                                
+                                if (addressSearchTimeout.current) clearTimeout(addressSearchTimeout.current);
+                                
+                                addressSearchTimeout.current = setTimeout(() => {
+                                  handleAddressSearch(val);
+                                }, 600);
+                              }}
+                              className="w-full pl-12 pr-4 py-4 bg-slate-100 dark:bg-slate-800 border-none rounded-2xl text-xs font-black uppercase tracking-widest placeholder:text-slate-400 focus:ring-2 focus:ring-blue-500 transition-all outline-none"
+                            />
+                            {isSearchingAddress && (
+                              <div className="absolute right-4 top-1/2 -translate-y-1/2">
+                                <Loader2 className="animate-spin text-blue-500" size={18} />
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="flex-1 overflow-y-auto custom-scrollbar space-y-6 pr-1">
+                            {/* Search Results */}
+                            {addressSearchResults.length > 0 && (
+                              <div className="space-y-2">
+                                <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 ml-1">Sugestões de Endereço</p>
+                                {addressSearchResults.map((result: any, idx) => (
+                                  <button
+                                    key={`search-res-${idx}`}
+                                    onClick={() => selectAddressFromSearch(result)}
+                                    className="w-full flex items-center gap-4 p-4 rounded-2xl bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 hover:border-blue-500 transition-all text-left group"
+                                  >
+                                    <div className="w-10 h-10 bg-blue-50 dark:bg-blue-900/20 rounded-xl flex items-center justify-center text-blue-500 shrink-0 group-hover:bg-blue-500 group-hover:text-white transition-all">
+                                      <MapIcon size={18} />
+                                    </div>
+                                    <div className="min-w-0 flex-1 overflow-hidden text-left py-1">
+                                      <div className="flex flex-col gap-1.5">
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                          <p className="text-xs font-black uppercase tracking-tight text-slate-800 dark:text-white">
+                                            Rua: <span className="text-blue-600 dark:text-blue-400">
+                                              {(result.address?.road || result.address?.pedestrian || result.name || 'Identificando...')}
+                                            </span>
+                                          </p>
+                                          {result.address?.house_number ? (
+                                            <div className="bg-emerald-500 text-white px-2 py-0.5 rounded-lg text-[9px] font-black uppercase shadow-sm">
+                                              Nº {result.address.house_number}
+                                            </div>
+                                          ) : (
+                                            <div className="bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 px-2 py-0.5 rounded-lg text-[8px] font-bold uppercase border border-amber-200 dark:border-amber-800">
+                                              S/ Nº
+                                            </div>
+                                          )}
+                                        </div>
+                                        
+                                        <div className="flex items-center gap-2">
+                                          {(result.address?.neighbourhood || result.address?.suburb || result.address?.district) ? (
+                                            <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-md border border-slate-200 dark:border-slate-700">
+                                              <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Bairro:</span>
+                                              <p className="text-[10px] font-black uppercase tracking-tighter text-slate-700 dark:text-slate-200 truncate max-w-[120px]">
+                                                {result.address?.neighbourhood || result.address?.suburb || result.address?.district}
+                                              </p>
+                                            </div>
+                                          ) : (
+                                            <p className="text-[9px] font-bold text-slate-400 italic">Bairro não identificado</p>
+                                          )}
+                                        </div>
+
+                                        <div className="bg-red-500 p-3 rounded-xl border-2 border-red-600 mt-2 shadow-md">
+                                           <div className="flex items-start gap-2 text-white leading-tight">
+                                              <MapPin size={16} className="shrink-0 mt-0.5" />
+                                              <div className="flex flex-col min-w-0 flex-1">
+                                                <span className="text-[9px] font-black uppercase tracking-widest text-red-100 mb-1">Referência do Endereço:</span>
+                                                <p className="text-[12px] font-black break-words leading-tight italic drop-shadow-sm">
+                                                  {result.display_name}
+                                                </p>
+                                              </div>
+                                           </div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+
+                            {/* GPS Button */}
+                            {!addressSearchQuery && (
+                              <button 
+                                 onClick={() => {
+                                   getPosition(true);
+                                   // We could also show map for GPS, but user asked for search flow
+                                   setIsAddressModalOpen(false);
+                                 }}
+                                 className="w-full flex items-center justify-center gap-2 p-4 rounded-2xl bg-blue-600 text-white font-black uppercase tracking-widest text-[10px] hover:bg-blue-700 transition-all shadow-lg shadow-blue-600/20"
+                              >
+                                <Zap size={16} />
+                                Usar minha localização atual (GPS)
+                              </button>
+                            )}
+
+                            {/* Saved Addresses */}
+                            {!addressSearchQuery && (
+                              <div className="space-y-3">
+                                <div className="flex items-center justify-between ml-1">
+                                  <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Endereços em {locationModalCity.name}</p>
+                                  <span className="text-[8px] font-bold text-slate-300">{savedAddresses.length} salvos</span>
+                                </div>
+                                
+                                {savedAddresses.length === 0 ? (
+                                  <div className="text-center py-8 bg-slate-50 dark:bg-slate-800/50 rounded-3xl border-2 border-dashed border-slate-200 dark:border-slate-700">
+                                     <MapPin size={24} className="mx-auto text-slate-300 mb-2" />
+                                     <p className="text-[10px] font-black uppercase tracking-tight text-slate-400">Nenhum endereço salvo ainda</p>
+                                  </div>
+                                ) : (
+                                  <div className="space-y-2">
+                                    {savedAddresses.filter(addr => addr.fullAddress.toLowerCase().includes(locationModalCity.name.toLowerCase())).map((addr) => (
+                                      <div 
+                                        key={addr.id}
+                                        className="group relative flex items-center animate-fade-in"
+                                      >
+                                        <button
+                                          onClick={() => {
+                                            setUserLocation({ latitude: addr.latitude, longitude: addr.longitude });
+                                            setLocationInfo(addr.shortAddress || addr.name);
+                                            setIsAddressModalOpen(false);
+                                          }}
+                                          className={`flex-1 flex items-center gap-4 p-4 rounded-2xl border-2 transition-all text-left ${
+                                            userLocation?.latitude === addr.latitude && userLocation?.longitude === addr.longitude
+                                            ? 'border-blue-500 bg-blue-50/50 dark:bg-blue-900/10'
+                                            : 'bg-white dark:bg-slate-800 border-slate-50 dark:border-slate-700 hover:border-slate-200 dark:hover:border-slate-600'
+                                          }`}
+                                        >
+                                          <div className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${
+                                            userLocation?.latitude === addr.latitude && userLocation?.longitude === addr.longitude
+                                            ? 'bg-blue-500 text-white'
+                                            : 'bg-slate-100 dark:bg-slate-700 text-slate-500'
+                                          }`}>
+                                            <Store size={18} />
+                                          </div>
+                                          <div className="min-w-0 pr-10 overflow-hidden flex-1">
+                                            <p className="text-[10px] font-black uppercase tracking-tight truncate dark:text-white">
+                                              {addr.neighborhood || addr.shortAddress || addr.name}
+                                            </p>
+                                            <p className="text-[9px] font-medium text-slate-400 truncate italic">
+                                              {addr.shortAddress || 'Endereço salvo'}
+                                            </p>
+                                          </div>
+                                        </button>
+                                        <button 
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            deleteSavedAddress(addr.id);
+                                          }}
+                                          className="absolute right-3 p-2 text-slate-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100"
+                                        >
+                                          <Trash2 size={16} />
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div className="p-4 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-100 dark:border-slate-700 flex items-center justify-between">
+                   <p className="text-[8px] font-black uppercase tracking-widest text-slate-400 flex items-center gap-1">
+                      <ShieldCheck size={10} className="text-emerald-500" />
+                      Seus dados estão seguros
+                   </p>
+                   <button 
+                    onClick={() => setAddressSearchQuery('')}
+                    className="text-[10px] font-black uppercase tracking-widest text-blue-500 hover:underline"
+                   >
+                     Limpar Busca
+                   </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
       {/* Order Cancel Confirmation Modal */}
         <AnimatePresence>
           {orderToCancel && (

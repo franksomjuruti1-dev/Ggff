@@ -1,4 +1,4 @@
-# Registro de Implementações Críticas - iFood Clara (Porto Velho)
+# Registro de Implementações Críticas - Xô Fome (Porto Velho)
 
 Este arquivo serve como memória técnica das implementações mais complexas e sensíveis do projeto, especialmente integrações de terceiros.
 

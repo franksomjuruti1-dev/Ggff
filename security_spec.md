@@ -1,4 +1,4 @@
-# Security Specification - iFood Clara (Porto Velho)
+# Security Specification - Xô Fome (Porto Velho)
 
 ## Data Invariants
 1. **Wallets**: Only the owner or an admin can read. Balance updates must come from verified operations.

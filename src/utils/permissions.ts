@@ -101,21 +101,22 @@ export async function getCameraAccess(videoOptions: boolean | MediaTrackConstrai
  * or to trigger the browser prompt if it's the first time and the context allows it.
  */
 export async function initPermissionFlow() {
-  console.log("[Permissions] Initializing automated permission flow...");
+  console.log("[Permissions] Initializing silent permission check...");
   
-  // 1. Try Geolocation
-  try {
-    const location = await getGeolocation();
-    console.log("[Permissions] Geolocation auto-granted/success", location);
-    // Custom event to notify app that location is ready
-    window.dispatchEvent(new CustomEvent('location-ready', { detail: location }));
-  } catch (error: any) {
-    console.warn("[Permissions] Geolocation initial request failed/denied:", error);
-    window.dispatchEvent(new CustomEvent('location-error', { detail: error }));
+  const status = await checkPermissionStatus('geolocation');
+  if (status === 'granted') {
+    try {
+      const location = await getGeolocation();
+      console.log("[Permissions] Geolocation refreshed", location);
+      window.dispatchEvent(new CustomEvent('location-ready', { detail: location }));
+    } catch (error: any) {
+      console.warn("[Permissions] Geolocation refresh failed:", error);
+    }
+  } else {
+    console.log("[Permissions] Geolocation not auto-granted, skipping to avoid blocking popup");
   }
 
-  // 2. Camera check (optional, usually only requested when needed, 
-  // but we check status if possible)
+  // Camera check
   const cameraStatus = await checkPermissionStatus('camera');
   console.log("[Permissions] Camera status:", cameraStatus);
 }

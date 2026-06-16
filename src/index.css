@@ -46,8 +46,10 @@
   
   .text-blue-gradient {
     background: linear-gradient(135deg, var(--color-brand-gradient-start) 0%, var(--color-brand-gradient-end) 100%);
+    background-clip: text;
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
+    color: var(--color-brand-blue); /* Fallback */
     transition: all 0.3s ease;
   }
 

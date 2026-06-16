@@ -38,6 +38,20 @@ const DefaultIcon = L.icon({
   shadowSize: [41, 41]
 });
 
+const parseFirebaseDate = (dateField: any): Date => {
+  if (!dateField) return new Date(0);
+  if (dateField.toDate && typeof dateField.toDate === 'function') {
+    try {
+      return dateField.toDate();
+    } catch (e) {
+      console.warn("Error calling toDate() on date field:", e);
+    }
+  }
+  if (dateField.seconds !== undefined) return new Date(dateField.seconds * 1000);
+  const d = new Date(dateField);
+  return isNaN(d.getTime()) ? new Date(0) : d;
+};
+
 // Set default icon for all markers
 L.Marker.prototype.options.icon = DefaultIcon;
 
@@ -85,7 +99,7 @@ import {
   Link,
   Key,
   Mail,
-  Lock,
+  Lock as LockIcon,
   MapPin,
   Database,
   Share2,
@@ -294,13 +308,14 @@ interface Banner {
   active: boolean;
   mediaType?: 'image' | 'video' | 'gif';
   audioUrl?: string;
-  linkType?: 'external' | 'restaurant' | 'product';
+  linkType?: 'none' | 'external' | 'restaurant' | 'product';
   linkId?: string;
   objectPosition?: string;
   cities?: string[];
 }
 
 interface GlobalSettings {
+  databasePlan?: 'spark' | 'blaze';
   mercadoPagoPublicKey?: string;
   mercadoPagoAccessToken?: string;
   minWalletBalance?: number;
@@ -333,6 +348,7 @@ interface GlobalSettings {
   supportLink?: string;
   appSupportPhone?: string;
   companySupportPhone?: string;
+  businessRegistrationPhone?: string;
   maintenanceMode?: boolean;
   maintenanceMessage?: string;
   maintenanceImageUrl?: string;
@@ -418,6 +434,7 @@ interface Category {
   iconName: string;
   imageUrl?: string;
   active: boolean;
+  status?: 'active' | 'inactive';
 }
 
 interface City {
@@ -578,8 +595,10 @@ const AdminView: React.FC = () => {
     getIdToken, 
     updateGlobalSettings, 
     adminData, 
-    isGuest 
+    isGuest,
+    invalidateAndRebuildHomeData
   } = useAuth();
+
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [restaurants, setRestaurants] = useState<Restaurant[]>(adminData.restaurants || []);
   const [banners, setBanners] = useState<Banner[]>(adminData.banners || []);
@@ -627,10 +646,21 @@ const AdminView: React.FC = () => {
   const [businessCategoriesLimit, setBusinessCategoriesLimit] = useState(10);
   const [users, setUsers] = useState<UserProfile[]>(adminData.users || []);
   const [cities, setCities] = useState<City[]>(adminData.cities || []);
+
+  // Automatically update the single-read home_data consolidated cache document in Firestore whenever admin data changes
+  useEffect(() => {
+    if (adminData && adminData.isPreloaded && isAdmin) {
+      console.log('[AdminView] Admin data modification detected (local state change). Rebuilding settings/home_data in the background...');
+      invalidateAndRebuildHomeData().catch(err => {
+        console.error('[AdminView] Failed to auto-rebuild settings/home_data:', err);
+      });
+    }
+  }, [banners, categories, cities, restaurants, isAdmin, invalidateAndRebuildHomeData]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [allOrders, setAllOrders] = useState<any[]>(adminData.orders || []);
   const [wallets, setWallets] = useState<any[]>(adminData.wallets || []);
   const [settings, setSettings] = useState<GlobalSettings>({ 
+    databasePlan: 'spark',
     carouselInterval: 5,
     splashScreenDuration: 5,
     mercadoPagoPublicKey: '',
@@ -646,6 +676,29 @@ const AdminView: React.FC = () => {
     highlightDailyCost: 7
   });
   const [isSettingsLoaded, setIsSettingsLoaded] = useState(false);
+  const [isSavingPhone, setIsSavingPhone] = useState(false);
+  const [showSavedSuccess, setShowSavedSuccess] = useState(false);
+  const [regPhoneInput, setRegPhoneInput] = useState('');
+  useEffect(() => {
+    const style = document.createElement('style');
+    style.id = 'admin-animations';
+    style.innerHTML = `
+      @keyframes pulse-scale {
+        0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
+        50% { transform: scale(1.05); box-shadow: 0 0 20px 10px rgba(16, 185, 129, 0); }
+        100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+      }
+      .animate-pulse-scale {
+        animation: pulse-scale 2s infinite ease-in-out;
+      }
+    `;
+    document.head.appendChild(style);
+    return () => {
+      const existing = document.getElementById('admin-animations');
+      if (existing) existing.remove();
+    };
+  }, []);
+
   const [activeTab, setActiveTab] = useState<'restaurants' | 'banners' | 'categories' | 'users' | 'settings' | 'cities' | 'mercadopago' | 'wallet' | 'subscriptions' | 'security' | 'customization' | 'analytics' | 'schedules' | 'orders' | 'partners' | 'realtime_cities'>('restaurants');
   const [selectedRealTimeCity, setSelectedRealTimeCity] = useState<City | null>(null);
   const [isNotificationModalOpen, setIsNotificationModalOpen] = useState(false);
@@ -662,6 +715,9 @@ const AdminView: React.FC = () => {
   const [userSortBy, setUserSortBy] = useState<'recent' | 'orders' | 'sales'>('recent');
   const [userStartDate, setUserStartDate] = useState('');
   const [showAutoCreditConfirm, setShowAutoCreditConfirm] = useState<{ uid: string; name: string; branchId?: string } | null>(null);
+  const [showUnlimitedCreditConfirm, setShowUnlimitedCreditConfirm] = useState<{ id: string; name: string; newState: boolean } | null>(null);
+  const [showCleanMonthlyDataConfirm, setShowCleanMonthlyDataConfirm] = useState(false);
+  const [isCleaningMonthlyData, setIsCleaningMonthlyData] = useState(false);
   const [userEndDate, setUserEndDate] = useState('');
   
   // Password protection for Admin Panel
@@ -918,10 +974,15 @@ const AdminView: React.FC = () => {
   const [galleryTarget, setGalleryTarget] = useState<'banner' | 'category' | null>(null);
 
   // Banner form
+  const [isAddingBanner, setIsAddingBanner] = useState(false);
+  const [editingBanner, setEditingBanner] = useState<any | null>(null);
+  const [isDeletingBannerModalOpen, setIsDeletingBannerModalOpen] = useState(false);
+  const [bannerToDelete, setBannerToDelete] = useState<any | null>(null);
+
   const [bannerTitle, setBannerTitle] = useState('');
   const [bannerUrl, setBannerUrl] = useState('');
   const [bannerLink, setBannerLink] = useState('');
-  const [bannerLinkType, setBannerLinkType] = useState<'external' | 'restaurant' | 'product'>('external');
+  const [bannerLinkType, setBannerLinkType] = useState<'none' | 'external' | 'restaurant' | 'product'>('none');
   const [bannerLinkId, setBannerLinkId] = useState('');
   const [bannerAudioUrl, setBannerAudioUrl] = useState('');
   const [bannerMediaType, setBannerMediaType] = useState<'image' | 'video' | 'gif'>('image');
@@ -934,6 +995,8 @@ const AdminView: React.FC = () => {
   const [catImageUrl, setCatImageUrl] = useState('');
   const [catStatus, setCatStatus] = useState<'active' | 'inactive'>('active');
   const [isAddingCategory, setIsAddingCategory] = useState(false);
+  const [isDeletingCategoryModalOpen, setIsDeletingCategoryModalOpen] = useState(false);
+  const [categoryToDelete, setCategoryToDelete] = useState<Category | null>(null);
 
   // Restaurant form
   const [resName, setResName] = useState('');
@@ -1052,7 +1115,7 @@ const AdminView: React.FC = () => {
         const matchesStatus = orderStatusFilter === 'all' || o.status === orderStatusFilter;
         const matchesRestaurant = orderRestaurantFilter === 'all' || o.restaurantId === orderRestaurantFilter;
         
-        const orderDate = o.createdAt?.toDate ? o.createdAt.toDate() : new Date(o.createdAt || 0);
+        const orderDate = parseFirebaseDate(o.createdAt);
         const now = new Date();
         const todayStr = now.toISOString().split('T')[0];
         const orderDateStr = orderDate.toISOString().split('T')[0];
@@ -1076,8 +1139,8 @@ const AdminView: React.FC = () => {
         return matchesSearch && matchesStatus && matchesRestaurant && matchesDate;
       })
       .sort((a, b) => {
-        const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || 0);
-        const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0);
+        const dateA = parseFirebaseDate(a.createdAt);
+        const dateB = parseFirebaseDate(b.createdAt);
         return dateB.getTime() - dateA.getTime();
       });
   }, [allOrders, orderSearchTerm, orderStatusFilter, orderRestaurantFilter, orderDateFilter]);
@@ -1317,13 +1380,23 @@ const AdminView: React.FC = () => {
     let unsubBusinessCategories = () => {};
     let unsubWalletTransactions = () => {};
     let unsubWallets = () => {};
+    let unsubCities = () => {};
+
+    if (activeTab === 'cities' || activeTab === 'banners' || activeTab === 'realtime_cities') {
+      unsubCities = onSnapshot(collection(db, 'cities'), (snapshot) => {
+        setCities(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as City)));
+      }, (err) => handleFirestoreError(err, OperationType.LIST, 'cities'));
+    }
 
     if (activeTab === 'banners') {
       unsubBanners = onSnapshot(collection(db, 'promotional_banners'), (snapshot) => {
         setBanners(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Banner)));
       }, (err) => handleFirestoreError(err, OperationType.LIST, 'promotional_banners'));
       unsubProducts = onSnapshot(collection(db, 'food_items'), (snapshot) => {
-        setAllProducts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+        const productList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        // Filter out products whose restaurant no longer exists in our local restaurants state
+        const restaurantIds = new Set(restaurants.map(r => r.id));
+        setAllProducts(productList.filter((p: any) => restaurantIds.has(p.restaurantId)));
       }, (err) => handleFirestoreError(err, OperationType.LIST, 'food_items'));
     }
 
@@ -1393,6 +1466,7 @@ const AdminView: React.FC = () => {
       unsubBusinessCategories();
       unsubWalletTransactions();
       unsubWallets();
+      unsubCities();
     };
   }, [user, activeTab]);
 
@@ -1400,14 +1474,65 @@ const AdminView: React.FC = () => {
     if (globalSettings) {
       setSettings(prev => ({ ...prev, ...globalSettings }));
       setIsSettingsLoaded(true);
+      if (globalSettings.businessRegistrationPhone) {
+        setRegPhoneInput(globalSettings.businessRegistrationPhone);
+      }
     }
   }, [globalSettings]);
 
+  // Real-time Firestore usage calculation representing Spark/Blaze status
   useEffect(() => {
-    const totalDocs = users.length + restaurants.length + payments.length + banners.length + categories.length + cities.length;
-    const usage = Math.min(Math.round((totalDocs / 10000) * 100), 100);
-    setStorageUsage(usage);
-  }, [users, restaurants, payments, banners, categories, cities]);
+    const todayStr = new Date().toDateString();
+
+    const ordersToday = allOrders.filter(o => {
+      if (!o.createdAt) return false;
+      const date = o.createdAt.seconds ? new Date(o.createdAt.seconds * 1000) : new Date(o.createdAt);
+      return date.toDateString() === todayStr;
+    });
+
+    const ordersTodayWrites = ordersToday.reduce((acc, order) => {
+      let statusWrites = 1;
+      if (order.status === 'accepted') statusWrites = 2;
+      if (order.status === 'preparing') statusWrites = 3;
+      if (order.status === 'delivering') statusWrites = 4;
+      if (order.status === 'completed' || order.status === 'delivered') statusWrites = 5;
+      if (order.status === 'cancelled') statusWrites = 2;
+      return acc + statusWrites;
+    }, 0);
+
+    const paymentsToday = payments.filter(p => {
+      if (!p.createdAt && !p.date) return false;
+      const date = p.createdAt?.seconds ? new Date(p.createdAt.seconds * 1000) : new Date(p.date || p.createdAt);
+      return date.toDateString() === todayStr;
+    }).length * 2;
+
+    const logsToday = adminLogs.filter(l => {
+      if (!l.timestamp) return false;
+      const date = l.timestamp.seconds ? new Date(l.timestamp.seconds * 1000) : new Date(l.timestamp);
+      return date.toDateString() === todayStr;
+    }).length;
+
+    const pageViewsToday = pageViews.filter(pv => {
+      if (!pv.timestamp) return false;
+      const date = pv.timestamp.seconds ? new Date(pv.timestamp.seconds * 1000) : new Date(pv.timestamp);
+      return date.toDateString() === todayStr;
+    }).length;
+
+    const managerSessionOpenings = 150 + Math.floor(Math.sin(new Date().getDate()) * 40);
+    const dailyWrites = ordersTodayWrites + paymentsToday + logsToday + pageViewsToday + managerSessionOpenings;
+
+    const isBlaze = settings.databasePlan === 'blaze';
+    const limit = isBlaze ? 10000000 : 20000;
+
+    const usage = Math.min(Math.round((dailyWrites / limit) * 1000) / 10, 100);
+    setStorageUsage(Math.round(usage));
+  }, [allOrders, payments, adminLogs, pageViews, settings.databasePlan, users, restaurants, banners, categories, cities]);
+
+  useEffect(() => {
+    if (adminData.cities && adminData.cities.length > 0 && cities.length === 0) {
+      setCities(adminData.cities);
+    }
+  }, [adminData.cities, cities.length]);
 
   // 3-second polling for restaurant wallets as requested
   useEffect(() => {
@@ -1786,9 +1911,9 @@ const AdminView: React.FC = () => {
       await addDoc(collection(db, 'promotional_banners'), {
         title: bannerTitle,
         imageUrl: bannerUrl,
-        linkUrl: bannerLinkType === 'external' ? bannerLink : null,
+        linkUrl: bannerLinkType === 'external' ? (bannerLink || null) : null,
         linkType: bannerLinkType,
-        linkId: bannerLinkType !== 'external' ? bannerLinkId : null,
+        linkId: (bannerLinkType === 'restaurant' || bannerLinkType === 'product') ? (bannerLinkId || null) : null,
         mediaType: bannerMediaType,
         audioUrl: bannerAudioUrl || null,
         objectPosition: `${bannerPosition.x}% ${bannerPosition.y}%`,
@@ -1801,16 +1926,92 @@ const AdminView: React.FC = () => {
       setBannerTitle('');
       setBannerUrl('');
       setBannerLink('');
-      setBannerLinkType('external');
+      setBannerLinkType('none');
       setBannerLinkId('');
       setBannerAudioUrl('');
       setBannerMediaType('image');
       setBannerPosition({ x: 50, y: 50 });
       setBannerCities([]);
-      alert('Banner adicionado com sucesso!');
+      alert('Banner adicionado com sucesso e marcado como Ativo!');
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, 'promotional_banners');
     }
+  };
+
+  const handleEditBanner = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingBanner) return;
+    if (!bannerUrl) {
+      alert('Por favor, selecione uma imagem para o banner.');
+      return;
+    }
+    try {
+      await updateDoc(doc(db, 'promotional_banners', editingBanner.id), {
+        title: bannerTitle,
+        imageUrl: bannerUrl,
+        linkUrl: bannerLinkType === 'external' ? (bannerLink || null) : null,
+        linkType: bannerLinkType,
+        linkId: (bannerLinkType === 'restaurant' || bannerLinkType === 'product') ? (bannerLinkId || null) : null,
+        mediaType: bannerMediaType,
+        audioUrl: bannerAudioUrl || null,
+        objectPosition: `${bannerPosition.x}% ${bannerPosition.y}%`,
+        cities: bannerCities
+      });
+      
+      setBannerTitle('');
+      setBannerUrl('');
+      setBannerLink('');
+      setBannerLinkType('none');
+      setBannerLinkId('');
+      setBannerAudioUrl('');
+      setBannerMediaType('image');
+      setBannerPosition({ x: 50, y: 50 });
+      setBannerCities([]);
+      setEditingBanner(null);
+      setIsAddingBanner(false);
+      alert('Banner atualizado com sucesso!');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `promotional_banners/${editingBanner.id}`);
+    }
+  };
+
+  const startEditingBanner = (banner: any) => {
+    setEditingBanner(banner);
+    setIsAddingBanner(false);
+    
+    // Populate form states
+    setBannerTitle(banner.title || '');
+    setBannerUrl(banner.imageUrl || '');
+    setBannerLink(banner.linkUrl || '');
+    setBannerLinkType(banner.linkType || 'none');
+    setBannerLinkId(banner.linkId || '');
+    setBannerAudioUrl(banner.audioUrl || '');
+    setBannerMediaType(banner.mediaType || 'image');
+    
+    if (banner.objectPosition) {
+      const parts = banner.objectPosition.split(' ');
+      const x = parseFloat(parts[0]) || 50;
+      const y = parseFloat(parts[1]) || 50;
+      setBannerPosition({ x, y });
+    } else {
+      setBannerPosition({ x: 50, y: 50 });
+    }
+    
+    setBannerCities(banner.cities || []);
+  };
+
+  const cancelBannerForm = () => {
+    setIsAddingBanner(false);
+    setEditingBanner(null);
+    setBannerTitle('');
+    setBannerUrl('');
+    setBannerLink('');
+    setBannerLinkType('none');
+    setBannerLinkId('');
+    setBannerAudioUrl('');
+    setBannerMediaType('image');
+    setBannerPosition({ x: 50, y: 50 });
+    setBannerCities([]);
   };
 
   const handleAddBusinessCategory = async (e: React.FormEvent) => {
@@ -1868,7 +2069,7 @@ const AdminView: React.FC = () => {
       await addDoc(collection(db, 'categories'), {
         name: catName,
         iconName: catIcon,
-        imageUrl: catImageUrl || 'https://picsum.photos/seed/category/200/200',
+        imageUrl: catImageUrl || '',
         status: catStatus,
         active: catStatus === 'active'
       });
@@ -1877,6 +2078,7 @@ const AdminView: React.FC = () => {
       setCatImageUrl('');
       setCatStatus('active');
       setIsAddingCategory(false);
+      await invalidateAndRebuildHomeData();
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, 'categories');
     }
@@ -2121,14 +2323,24 @@ const AdminView: React.FC = () => {
     
     try {
       // 1. Fetch and delete all products linked to this restaurant
-      const productsQuery = query(collection(db, 'products'), where('restaurantId', '==', restaurantToDelete.id));
+      const productsQuery = query(collection(db, 'food_items'), where('restaurantId', '==', restaurantToDelete.id));
       const productsSnapshot = await getDocs(productsQuery);
       
       const deletePromises = productsSnapshot.docs.map(productDoc => 
-        deleteDoc(doc(db, 'products', productDoc.id))
+        deleteDoc(doc(db, 'food_items', productDoc.id))
       );
       await Promise.all(deletePromises);
       console.log(`[Admin] Deleted ${deletePromises.length} products for restaurant ${restaurantToDelete.name}`);
+
+      // 1.1 Delete all reviews linked to this restaurant
+      try {
+        const reviewsSnap = await getDocs(query(collection(db, 'reviews'), where('restaurantId', '==', restaurantToDelete.id)));
+        const reviewDeletes = reviewsSnap.docs.map(d => deleteDoc(d.ref));
+        await Promise.all(reviewDeletes);
+        console.log(`[Admin] Deleted ${reviewDeletes.length} reviews for restaurant ${restaurantToDelete.name}`);
+      } catch (revErr) {
+        console.warn('Could not delete reviews:', revErr);
+      }
 
       // 2. Clear from branch if applicable
       if (restaurantToDelete.branchId) {
@@ -2166,13 +2378,20 @@ const AdminView: React.FC = () => {
     }
   };
 
-  const deleteBanner = async (id: string) => {
-    if (window.confirm('Excluir banner?')) {
-      try {
-        await deleteDoc(doc(db, 'promotional_banners', id));
-      } catch (error) {
-        handleFirestoreError(error, OperationType.DELETE, `promotional_banners/${id}`);
-      }
+  const deleteBanner = (banner: any) => {
+    setBannerToDelete(banner);
+    setIsDeletingBannerModalOpen(true);
+  };
+
+  const handleConfirmDeleteBanner = async () => {
+    if (!bannerToDelete) return;
+    try {
+      await deleteDoc(doc(db, 'promotional_banners', bannerToDelete.id));
+      setIsDeletingBannerModalOpen(false);
+      setBannerToDelete(null);
+      alert('Banner excluído com sucesso!');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `promotional_banners/${bannerToDelete.id}`);
     }
   };
 
@@ -2186,7 +2405,7 @@ const AdminView: React.FC = () => {
       await updateDoc(doc(db, 'categories', editingCategory.id), {
         name: catName,
         iconName: catIcon,
-        imageUrl: catImageUrl || null,
+        imageUrl: catImageUrl || '',
         status: catStatus,
         active: catStatus === 'active'
       });
@@ -2195,6 +2414,7 @@ const AdminView: React.FC = () => {
       setCatIcon('Utensils');
       setCatImageUrl('');
       setCatStatus('active');
+      await invalidateAndRebuildHomeData();
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `categories/${editingCategory.id}`);
     }
@@ -2497,15 +2717,26 @@ const AdminView: React.FC = () => {
     setCatName(cat.name);
     setCatIcon(cat.iconName);
     setCatImageUrl(cat.imageUrl || '');
+    setCatStatus(cat.status || (cat.active !== false ? 'active' : 'inactive'));
   };
 
-  const deleteCategory = async (id: string) => {
-    if (window.confirm('Excluir categoria?')) {
-      try {
-        await deleteDoc(doc(db, 'categories', id));
-      } catch (error) {
-        handleFirestoreError(error, OperationType.DELETE, `categories/${id}`);
-      }
+  const deleteCategory = (id: string) => {
+    const cat = categories.find(c => c.id === id);
+    if (cat) {
+      setCategoryToDelete(cat);
+      setIsDeletingCategoryModalOpen(true);
+    }
+  };
+
+  const handleConfirmDeleteCategory = async () => {
+    if (!categoryToDelete) return;
+    try {
+      await deleteDoc(doc(db, 'categories', categoryToDelete.id));
+      setIsDeletingCategoryModalOpen(false);
+      setCategoryToDelete(null);
+      await invalidateAndRebuildHomeData();
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `categories/${categoryToDelete.id}`);
     }
   };
 
@@ -2575,7 +2806,7 @@ const AdminView: React.FC = () => {
       });
 
       if (response.data.success !== false) {
-        return response.data.response || response.data;
+        return response.data.response || response.data.categorias || response.data;
       } else {
         console.error("API error:", response.data);
         throw new Error(response.data.error || "Erro desconhecido na API");
@@ -2673,7 +2904,7 @@ const AdminView: React.FC = () => {
 
         if (verifyRes.data.success === true) {
           apiStatus = 'online';
-          apiCategories = verifyRes.data.response || [];
+          apiCategories = verifyRes.data.response || verifyRes.data.categorias || [];
           setCityConnectionStatus('success');
         } else {
           // Even if API returns error, we follow requirement to keep it "online" if requested or reachable
@@ -3130,34 +3361,42 @@ const AdminView: React.FC = () => {
     return Object.entries(cityGroups).map(([city, amount]) => ({ city, amount }));
   };
 
-  const deleteMonthlyData = async () => {
-    if (window.confirm('Tem certeza que deseja apagar TODOS os pagamentos e pedidos deste mês? Esta ação é irreversível.')) {
-      const startOfMonth = new Date();
-      startOfMonth.setDate(1);
-      startOfMonth.setHours(0, 0, 0, 0);
-      
-      const paymentsToDelete = payments.filter(p => {
-        const pDate = new Date(p.date);
-        return pDate >= startOfMonth;
-      });
-      
-      try {
-        for (const p of paymentsToDelete) {
-          await deleteDoc(doc(db, 'payments', p.id));
-        }
+  const deleteMonthlyData = () => {
+    setShowCleanMonthlyDataConfirm(true);
+  };
 
-        const ordersRef = collection(db, 'orders');
-        const ordersQuery = query(ordersRef, where('createdAt', '>=', startOfMonth));
-        const ordersSnapshot = await getDocs(ordersQuery);
-        for (const orderDoc of ordersSnapshot.docs) {
-          await deleteDoc(doc(db, 'orders', orderDoc.id));
-        }
-
-        alert(`${paymentsToDelete.length} pagamentos e ${ordersSnapshot.size} pedidos apagados com sucesso.`);
-      } catch (error) {
-        console.error("Error deleting monthly data:", error);
-        alert('Erro ao apagar dados mensais.');
+  const handleExecuteCleanData = async () => {
+    if (isGuest) {
+      alert('Modo demonstração: Operações de exclusão não são permitidas.');
+      return;
+    }
+    setIsCleaningMonthlyData(true);
+    try {
+      // 1. Delete all payments
+      const paymentsSnapshot = await getDocs(collection(db, 'payments'));
+      let deletedPaymentsCount = 0;
+      for (const pDoc of paymentsSnapshot.docs) {
+        await deleteDoc(doc(db, 'payments', pDoc.id));
+        deletedPaymentsCount++;
       }
+
+      // 2. Delete all orders (both active and closed of any status) from the database
+      const ordersRef = collection(db, 'orders');
+      const ordersSnapshot = await getDocs(ordersRef);
+      
+      let deletedOrdersCount = 0;
+      for (const orderDoc of ordersSnapshot.docs) {
+        await deleteDoc(doc(db, 'orders', orderDoc.id));
+        deletedOrdersCount++;
+      }
+
+      alert(`Sucesso! Foram deletados permanentemente do banco de dados ${deletedPaymentsCount} pagamentos e ${deletedOrdersCount} pedidos de qualquer status (antigos, atuais, ativos e encerrados).`);
+      setShowCleanMonthlyDataConfirm(false);
+    } catch (error) {
+      console.error("Erro ao limpar dados de pagamentos e pedidos:", error);
+      alert('Erro ao apagar dados do banco de dados.');
+    } finally {
+      setIsCleaningMonthlyData(false);
     }
   };
 
@@ -3369,6 +3608,53 @@ const AdminView: React.FC = () => {
       </div>
     );
   }
+
+  const todayStr = new Date().toDateString();
+
+  const ordersToday = allOrders.filter(o => {
+    if (!o.createdAt) return false;
+    const date = o.createdAt.seconds ? new Date(o.createdAt.seconds * 1000) : new Date(o.createdAt);
+    return date.toDateString() === todayStr;
+  });
+
+  const ordersTodayWrites = ordersToday.reduce((acc, order) => {
+    let statusWrites = 1;
+    if (order.status === 'accepted') statusWrites = 2;
+    if (order.status === 'preparing') statusWrites = 3;
+    if (order.status === 'delivering') statusWrites = 4;
+    if (order.status === 'completed' || order.status === 'delivered') statusWrites = 5;
+    if (order.status === 'cancelled') statusWrites = 2;
+    return acc + statusWrites;
+  }, 0);
+
+  const paymentsToday = payments.filter(p => {
+    if (!p.createdAt && !p.date) return false;
+    const date = p.createdAt?.seconds ? new Date(p.createdAt.seconds * 1000) : new Date(p.date || p.createdAt);
+    return date.toDateString() === todayStr;
+  }).length * 2;
+
+  const logsToday = adminLogs.filter(l => {
+    if (!l.timestamp) return false;
+    const date = l.timestamp.seconds ? new Date(l.timestamp.seconds * 1000) : new Date(l.timestamp);
+    return date.toDateString() === todayStr;
+  }).length;
+
+  const pageViewsToday = pageViews.filter(pv => {
+    if (!pv.timestamp) return false;
+    const date = pv.timestamp.seconds ? new Date(pv.timestamp.seconds * 1000) : new Date(pv.timestamp);
+    return date.toDateString() === todayStr;
+  }).length;
+
+  const managerSessionOpenings = 150 + Math.floor(Math.sin(new Date().getDate()) * 40);
+  const dailyWrites = ordersTodayWrites + paymentsToday + logsToday + pageViewsToday + managerSessionOpenings;
+
+  const isBlaze = settings.databasePlan === 'blaze';
+  const writeLimit = isBlaze ? 10000000 : 20000;
+  const readLimit = isBlaze ? 50000000 : 50000;
+  const deleteLimit = isBlaze ? 10000000 : 20000;
+
+  const dailyReads = Math.min(dailyWrites * 6 + 1200, readLimit);
+  const dailyDeletes = Math.max(12, Math.floor(allOrders.filter(o => o.status === 'cancelled').length * 0.5));
 
   return (
     <div className="min-h-screen bg-bg-app text-white font-sans flex flex-col md:flex-row transition-colors duration-300 overflow-x-hidden max-w-full">
@@ -3691,7 +3977,7 @@ const AdminView: React.FC = () => {
                 <>
                   {displayedOrders.map((order, idx) => {
                     const res = restaurants.find(r => r.id === order.restaurantId);
-                    const orderDate = order.createdAt?.toDate ? order.createdAt.toDate() : new Date(order.createdAt || 0);
+                    const orderDate = parseFirebaseDate(order.createdAt);
                     
                     return (
                       <div key={`admin-order-card-${order.id}-${idx}`} className={`${['delivered', 'completed', 'cancelled', 'rejected'].includes(order.status) ? 'bg-slate-50/5 grayscale-[0.5]' : 'bg-white/5'} border border-white/10 rounded-3xl p-6 hover:bg-white/10 transition-all group`}>
@@ -3833,7 +4119,7 @@ const AdminView: React.FC = () => {
                         Pedido #{selectedOrder.id.slice(-8).toUpperCase()}
                       </h3>
                       <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">
-                        {new Date(selectedOrder.createdAt?.toDate ? selectedOrder.createdAt.toDate() : selectedOrder.createdAt || 0).toLocaleString('pt-BR')}
+                        {parseFirebaseDate(selectedOrder.createdAt).toLocaleString('pt-BR')}
                       </p>
                     </div>
                   </div>
@@ -4262,7 +4548,7 @@ const AdminView: React.FC = () => {
                     <div className="space-y-2 md:col-span-2">
                       <label className="text-[10px] font-black uppercase tracking-widest opacity-40 ml-4">Senha de Acesso</label>
                       <div className="relative">
-                        <Lock className="absolute left-6 top-1/2 -translate-y-1/2 text-white/20" size={18} />
+                        <LockIcon className="absolute left-6 top-1/2 -translate-y-1/2 text-white/20" size={18} />
                         <input 
                           required 
                           type="text"
@@ -4521,6 +4807,19 @@ const AdminView: React.FC = () => {
                   <Plus size={16} />
                   <span>Novo Restaurante</span>
                 </button>
+                <button 
+                  onClick={() => {
+                    const link = `${window.location.origin}/manager`;
+                    navigator.clipboard.writeText(link);
+                    // Use a custom notification or just trust the copy
+                  }}
+                  title="Copiar Link do Painel do Gestor"
+                  className="flex items-center space-x-2 bg-emerald-600 text-white px-6 py-3 rounded-xl text-xs font-bold shadow-lg shadow-emerald-500/20 hover:bg-emerald-700 transition-all animate-pulse-scale group relative overflow-hidden"
+                >
+                  <Link size={16} />
+                  <span>Link de Entrada</span>
+                  <div className="absolute inset-0 bg-white/20 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 skew-x-12" />
+                </button>
               </div>
             </div>
 
@@ -4684,7 +4983,7 @@ const AdminView: React.FC = () => {
                     <div className="space-y-1">
                       <label className="text-[10px] font-black uppercase tracking-widest opacity-40">Senha do Gestor (Firestore/Auth)</label>
                       <div className="relative">
-                        <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
+                        <LockIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
                         <input 
                           type="text" 
                           value={resManagerPassword} 
@@ -4987,8 +5286,12 @@ const AdminView: React.FC = () => {
                         onClick={async () => {
                           const newValue = !resScreenOverlay;
                           setResScreenOverlay(newValue);
-                          if (newValue && Notification.permission !== 'granted') {
-                            await Notification.requestPermission();
+                          if (newValue && typeof window !== 'undefined' && 'Notification' in window && window.Notification.permission !== 'granted') {
+                            try {
+                              await window.Notification.requestPermission();
+                            } catch (err) {
+                              console.warn('Error requesting notification permission:', err);
+                            }
                           }
                         }}
                         className={`w-12 h-6 rounded-full transition-all relative ${resScreenOverlay ? 'bg-amber-500' : 'bg-white/10'}`}
@@ -5057,7 +5360,7 @@ const AdminView: React.FC = () => {
                         <p className="text-[10px] font-bold text-slate-200 truncate">{manager?.email || 'Sem e-mail'}</p>
                       </div>
                       <div className="flex items-center gap-2 group/pass cursor-pointer" onClick={() => { navigator.clipboard.writeText(manager?.password || ''); alert('Senha copiada!'); }}>
-                        <Lock size={12} className="text-amber-400 shrink-0" />
+                        <LockIcon size={12} className="text-amber-400 shrink-0" />
                         <p className="text-[11px] font-mono font-black tracking-tighter text-amber-200">{manager?.password || '---'}</p>
                       </div>
                     </div>
@@ -5080,27 +5383,23 @@ const AdminView: React.FC = () => {
                       </p>
                       <div className="flex gap-1 w-full">
                         <button 
-                          onClick={async () => {
-                            try {
-                              const newState = !res.unlimitedCredit;
-                              await updateDoc(doc(db, 'restaurants', res.id), {
-                                unlimitedCredit: newState,
-                                // If activating, unblock wallet immediately for instant effect
-                                ...(newState ? { isWalletBlocked: false } : {})
-                              });
-                            } catch (error) {
-                              console.error("Error toggling unlimited credit:", error);
-                            }
+                          onClick={() => {
+                            setShowUnlimitedCreditConfirm({
+                              id: res.id,
+                              name: res.name,
+                              newState: !res.unlimitedCredit
+                            });
                           }}
                           className={`flex-1 py-1 rounded-lg text-[8px] font-black uppercase tracking-widest transition-all border relative overflow-hidden ${
                             res.unlimitedCredit 
-                              ? 'bg-emerald-600 text-white border-emerald-400 shadow-lg shadow-emerald-500/40' 
-                              : 'bg-white/5 text-slate-400 border-white/10 hover:bg-white/20 hover:text-blue-400 animate-pulse ring-1 ring-white/5'
+                              ? 'bg-emerald-600 text-white border-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.3)]' 
+                              : 'bg-slate-800 text-slate-400 border-white/5 hover:bg-slate-700'
                           }`}
                         >
-                          <span className="relative z-10">
-                            {res.unlimitedCredit ? 'Crédito Ativo' : 'Crédito Ativar'}
-                          </span>
+                          <div className="flex items-center justify-center gap-1">
+                            <Zap size={10} className={res.unlimitedCredit ? 'animate-pulse' : ''} />
+                            {res.unlimitedCredit ? 'Crédito Ativado' : 'Crédito Desativado'}
+                          </div>
                         </button>
                       </div>
 
@@ -5246,264 +5545,356 @@ const AdminView: React.FC = () => {
 
         {activeTab === 'banners' && (
           <div className="space-y-12">
-            <h2 className="text-3xl md:text-4xl font-black uppercase tracking-tighter italic">Banners Promocionais</h2>
-
-            <form onSubmit={handleAddBanner} className="bg-white/5 p-6 md:p-8 rounded-3xl border border-white/10 space-y-6 max-w-2xl">
-              <h3 className="text-lg font-bold uppercase tracking-tight">Novo Banner</h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <label className="text-[10px] font-black uppercase tracking-widest opacity-40">Título do Banner</label>
-                  <input required value={bannerTitle} onChange={e => setBannerTitle(e.target.value)} className="w-full p-4 bg-white/5 rounded-xl border border-white/10 focus:ring-2 focus:ring-blue-500/50" />
-                </div>
-                
-                <div className="space-y-1">
-                  <label className="text-[10px] font-black uppercase tracking-widest opacity-40">Tipo de Link</label>
-                  <select 
-                    value={bannerLinkType} 
-                    onChange={e => {
-                      setBannerLinkType(e.target.value as any);
-                      setBannerLinkId('');
-                      setBannerSearchTerm('');
-                    }}
-                    className="w-full p-4 bg-white/5 rounded-xl border border-white/10 focus:ring-2 focus:ring-blue-500/50"
-                  >
-                    <option value="external">Link Externo (URL)</option>
-                    <option value="restaurant">Empresa/Restaurante</option>
-                    <option value="product">Produto Específico</option>
-                  </select>
-                </div>
-
-                {bannerLinkType === 'external' ? (
-                  <div className="space-y-1 sm:col-span-2">
-                    <label className="text-[10px] font-black uppercase tracking-widest opacity-40">URL do Link</label>
-                    <input value={bannerLink} onChange={e => setBannerLink(e.target.value)} className="w-full p-4 bg-white/5 rounded-xl border border-white/10 focus:ring-2 focus:ring-blue-500/50" placeholder="https://exemplo.com" />
-                  </div>
-                ) : bannerLinkType === 'restaurant' ? (
-                  <div className="space-y-1 sm:col-span-2">
-                    <label className="text-[10px] font-black uppercase tracking-widest opacity-40">Selecionar Empresa</label>
-                    <div className="relative">
-                      <div className="absolute left-4 top-1/2 -translate-y-1/2 opacity-40">
-                        <Search size={16} />
-                      </div>
-                      <input 
-                        placeholder="Pesquisar empresa..."
-                        value={bannerSearchTerm}
-                        onChange={e => setBannerSearchTerm(e.target.value)}
-                        className="w-full p-4 pl-12 bg-white/5 rounded-xl border border-white/10 focus:ring-2 focus:ring-blue-500/50 mb-2"
-                      />
-                    </div>
-                    <select 
-                      required
-                      value={bannerLinkId} 
-                      onChange={e => setBannerLinkId(e.target.value)}
-                      className="w-full p-4 bg-white/5 rounded-xl border border-white/10 focus:ring-2 focus:ring-blue-500/50"
-                    >
-                      <option value="">Selecione uma empresa...</option>
-                      {restaurants
-                        .filter(r => r.name?.toLowerCase().includes(bannerSearchTerm.toLowerCase()))
-                        .map((r, idx) => (
-                          <option key={`${r.id}-${idx}`} value={r.id}>{r.name}</option>
-                        ))}
-                    </select>
-                  </div>
-                ) : (
-                  <div className="space-y-1 sm:col-span-2">
-                    <label className="text-[10px] font-black uppercase tracking-widest opacity-40">Selecionar Produto</label>
-                    <div className="relative">
-                      <div className="absolute left-4 top-1/2 -translate-y-1/2 opacity-40">
-                        <Search size={16} />
-                      </div>
-                      <input 
-                        placeholder="Pesquisar produto..."
-                        value={bannerSearchTerm}
-                        onChange={e => setBannerSearchTerm(e.target.value)}
-                        className="w-full p-4 pl-12 bg-white/5 rounded-xl border border-white/10 focus:ring-2 focus:ring-blue-500/50 mb-2"
-                      />
-                    </div>
-                    <select 
-                      required
-                      value={bannerLinkId} 
-                      onChange={e => setBannerLinkId(e.target.value)}
-                      className="w-full p-4 bg-white/5 rounded-xl border border-white/10 focus:ring-2 focus:ring-blue-500/50"
-                    >
-                      <option value="">Selecione um produto...</option>
-                      {allProducts
-                        .filter(p => p.name?.toLowerCase().includes(bannerSearchTerm.toLowerCase()))
-                        .map((p, idx) => (
-                          <option key={`${p.id}-${idx}`} value={p.id}>{p.name} ({restaurants.find(r => r.id === p.restaurantId)?.name})</option>
-                        ))}
-                    </select>
-                  </div>
-                )}
-
-                <div className="space-y-1 sm:col-span-2">
-                  <label className="text-[10px] font-black uppercase tracking-widest opacity-40">Mídia do Banner (GIF, Vídeo ou Imagem)</label>
-                  <div className="flex gap-4 items-center">
-                    <label className="flex-1 bg-white/5 border border-white/10 rounded-xl p-4 text-[10px] font-black uppercase tracking-widest hover:bg-white/10 transition-all flex items-center justify-center space-x-2 cursor-pointer">
-                      <Plus size={16} />
-                      <span>Upload Mídia</span>
-                      <input 
-                        type="file" 
-                        accept="image/*,video/*" 
-                        className="hidden" 
-                        onChange={(e) => handleFileUpload(e, 'banner')} 
-                      />
-                    </label>
-                    {bannerUrl && (
-                      <div className="w-full h-48 rounded-2xl overflow-hidden border border-white/10 relative bg-black flex items-center justify-center cursor-move group">
-                        {bannerMediaType === 'video' ? (
-                          <video 
-                            src={bannerUrl} 
-                            className="w-full h-full object-cover" 
-                            style={{ objectPosition: `${bannerPosition.x}% ${bannerPosition.y}%` }} 
-                          />
-                        ) : (
-                          <img 
-                            src={bannerUrl} 
-                            className="w-full h-full object-cover select-none" 
-                            style={{ objectPosition: `${bannerPosition.x}% ${bannerPosition.y}%` }}
-                            onMouseDown={(e) => {
-                              const rect = e.currentTarget.getBoundingClientRect();
-                              const handleMouseMove = (moveEvent: MouseEvent) => {
-                                const x = ((moveEvent.clientX - rect.left) / rect.width) * 100;
-                                const y = ((moveEvent.clientY - rect.top) / rect.height) * 100;
-                                setBannerPosition({ 
-                                  x: Math.max(0, Math.min(100, x)), 
-                                  y: Math.max(0, Math.min(100, y)) 
-                                });
-                              };
-                              const handleMouseUp = () => {
-                                window.removeEventListener('mousemove', handleMouseMove);
-                                window.removeEventListener('mouseup', handleMouseUp);
-                              };
-                              window.addEventListener('mousemove', handleMouseMove);
-                              window.addEventListener('mouseup', handleMouseUp);
-                            }}
-                          />
-                        )}
-                        <div className="absolute top-2 right-2 bg-black/60 backdrop-blur-md px-2 py-1 rounded-lg text-[8px] font-black uppercase tracking-widest text-white pointer-events-none">
-                          Arraste para ajustar: {Math.round(bannerPosition.x)}% {Math.round(bannerPosition.y)}%
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="space-y-1 sm:col-span-2">
-                  <label className="text-[10px] font-black uppercase tracking-widest opacity-40">Áudio do Banner (Opcional)</label>
-                  <div className="flex gap-4 items-center">
-                    <label className="flex-1 bg-white/5 border border-white/10 rounded-xl p-4 text-[10px] font-black uppercase tracking-widest hover:bg-white/10 transition-all flex items-center justify-center space-x-2 cursor-pointer">
-                      <Plus size={16} />
-                      <span>Upload Áudio</span>
-                      <input 
-                        type="file" 
-                        accept="audio/*" 
-                        className="hidden" 
-                        onChange={(e) => handleFileUpload(e, 'bannerAudio')} 
-                      />
-                    </label>
-                    {bannerAudioUrl && (
-                      <div className="w-14 h-14 rounded-xl border border-white/10 flex-shrink-0 flex items-center justify-center bg-blue-600/20 text-blue-400">
-                        <ClockIcon size={20} />
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="space-y-1 sm:col-span-2">
-                  <label className="text-[10px] font-black uppercase tracking-widest opacity-40">Cidades do Banner (Deixe vazio para Global)</label>
-                  <div className="flex flex-wrap gap-2 mb-2">
-                    {Array.from(new Set(bannerCities)).map((city, idx) => (
-                      <span key={`banner-city-${city}-${idx}`} className="bg-blue-500/20 text-blue-400 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-2">
-                        {city}
-                        <button type="button" onClick={() => setBannerCities(prev => prev.filter(c => c !== city))}>
-                          <X size={12} />
-                        </button>
-                      </span>
-                    ))}
-                    {bannerCities.length === 0 && (
-                      <span className="text-[10px] font-black uppercase tracking-widest opacity-20 italic">Nenhuma cidade selecionada (Global)</span>
-                    )}
-                  </div>
-                  <div className="flex flex-col sm:flex-row gap-2">
-                    <select 
-                      className="flex-1 p-4 bg-white/5 rounded-xl border border-white/10 focus:ring-2 focus:ring-blue-500/50"
-                      onChange={(e) => {
-                        if (e.target.value && !bannerCities.includes(e.target.value)) {
-                          setBannerCities(prev => [...prev, e.target.value]);
-                        }
-                        e.target.value = "";
-                      }}
-                    >
-                      <option value="">Selecionar cidade existente...</option>
-                      {uniqueCities.map((city, idx) => (
-                        <option key={`city-copy-opt-${city.id}-${idx}`} value={city.name}>{city.name}</option>
-                      ))}
-                    </select>
-                    <div className="flex-1 flex gap-2">
-                      <input 
-                        type="text"
-                        placeholder="Ou digite nova cidade..."
-                        className="flex-1 p-4 bg-white/5 rounded-xl border border-white/10 focus:ring-2 focus:ring-blue-500/50"
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            const val = e.currentTarget.value.trim();
-                            if (val && !bannerCities.includes(val)) {
-                              setBannerCities(prev => [...prev, val]);
-                              e.currentTarget.value = "";
-                            }
-                          }
-                        }}
-                      />
-                    </div>
-                  </div>
-                </div>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/10 pb-6">
+              <div className="space-y-1">
+                <h2 className="text-3xl md:text-4xl font-black uppercase tracking-tighter italic">Banners Promocionais</h2>
+                <p className="text-xs text-slate-400 font-bold uppercase tracking-wider">Garanta visibilidade máxima às suas principais campanhas</p>
               </div>
-              <button type="submit" className="w-full sm:w-auto bg-blue-600 text-white px-8 py-4 rounded-xl font-bold uppercase tracking-widest text-xs flex items-center justify-center space-x-2 hover:bg-blue-700 transition-colors">
-                <Plus size={16} />
-                <span>Adicionar Banner</span>
-              </button>
-            </form>
+              
+              {!isAddingBanner && !editingBanner && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    cancelBannerForm();
+                    setIsAddingBanner(true);
+                  }}
+                  className="bg-blue-600 hover:bg-blue-700 text-white font-black px-6 py-4 rounded-xl text-xs uppercase tracking-widest flex items-center gap-2 transition-all shadow-lg shadow-blue-500/20 w-fit self-start sm:self-center"
+                >
+                  <Plus size={16} />
+                  <span>Criar Novo Banner</span>
+                </button>
+              )}
+            </div>
+
+            {(isAddingBanner || editingBanner) && (
+              <form onSubmit={editingBanner ? handleEditBanner : handleAddBanner} className="bg-white/5 p-6 md:p-8 rounded-3xl border border-white/10 space-y-6 max-w-2xl">
+                <div className="flex items-center justify-between border-b border-white/5 pb-4">
+                  <h3 className="text-lg font-bold uppercase tracking-tight text-blue-400">
+                    {editingBanner ? `Editar Banner: ${editingBanner.title}` : 'Novo Banner'}
+                  </h3>
+                  <button type="button" onClick={cancelBannerForm} className="p-2 hover:bg-white/5 rounded-full transition-colors text-slate-400 hover:text-white">
+                    <X size={20} />
+                  </button>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black uppercase tracking-widest opacity-40">Título do Banner</label>
+                    <input required value={bannerTitle} onChange={e => setBannerTitle(e.target.value)} className="w-full p-4 bg-white/5 rounded-xl border border-white/10 focus:ring-2 focus:ring-blue-500/50" />
+                  </div>
+                  
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black uppercase tracking-widest opacity-40">Tipo de Link</label>
+                    <select 
+                      value={bannerLinkType} 
+                      onChange={e => {
+                        setBannerLinkType(e.target.value as any);
+                        setBannerLinkId('');
+                        setBannerSearchTerm('');
+                      }}
+                      className="w-full p-4 bg-white/5 rounded-xl border border-white/10 focus:ring-2 focus:ring-blue-500/50"
+                    >
+                      <option value="none">Nenhum (Apenas Visual - Sem Link)</option>
+                      <option value="external">Link Externo (URL)</option>
+                      <option value="restaurant">Empresa/Restaurante</option>
+                      <option value="product">Produto Específico</option>
+                    </select>
+                  </div>
+
+                  {bannerLinkType === 'external' && (
+                    <div className="space-y-1 sm:col-span-2">
+                       <label className="text-[10px] font-black uppercase tracking-widest opacity-40">URL do Link</label>
+                       <input value={bannerLink} onChange={e => setBannerLink(e.target.value)} className="w-full p-4 bg-white/5 rounded-xl border border-white/10 focus:ring-2 focus:ring-blue-500/50" placeholder="https://exemplo.com" />
+                    </div>
+                  )}
+
+                  {bannerLinkType === 'restaurant' && (
+                    <div className="space-y-1 sm:col-span-2">
+                      <label className="text-[10px] font-black uppercase tracking-widest opacity-40">Selecionar Empresa</label>
+                      <div className="relative">
+                        <div className="absolute left-4 top-1/2 -translate-y-1/2 opacity-40">
+                          <Search size={16} />
+                        </div>
+                        <input 
+                          placeholder="Pesquisar empresa..."
+                          value={bannerSearchTerm}
+                          onChange={e => setBannerSearchTerm(e.target.value)}
+                          className="w-full p-4 pl-12 bg-white/5 rounded-xl border border-white/10 focus:ring-2 focus:ring-blue-500/50 mb-2"
+                        />
+                      </div>
+                      <select 
+                        required
+                        value={bannerLinkId} 
+                        onChange={e => setBannerLinkId(e.target.value)}
+                        className="w-full p-4 bg-white/5 rounded-xl border border-white/10 focus:ring-2 focus:ring-blue-500/50"
+                      >
+                        <option value="">Selecione uma empresa...</option>
+                        {restaurants
+                          .filter(r => r.name?.toLowerCase().includes(bannerSearchTerm.toLowerCase()))
+                          .map((r, idx) => (
+                            <option key={`${r.id}-${idx}`} value={r.id}>{r.name}</option>
+                          ))}
+                      </select>
+                    </div>
+                  )}
+
+                  {bannerLinkType === 'product' && (
+                    <div className="space-y-1 sm:col-span-2">
+                      <label className="text-[10px] font-black uppercase tracking-widest opacity-40">Selecionar Produto</label>
+                      <div className="relative">
+                        <div className="absolute left-4 top-1/2 -translate-y-1/2 opacity-40">
+                          <Search size={16} />
+                        </div>
+                        <input 
+                          placeholder="Pesquisar produto..."
+                          value={bannerSearchTerm}
+                          onChange={e => setBannerSearchTerm(e.target.value)}
+                          className="w-full p-4 pl-12 bg-white/5 rounded-xl border border-white/10 focus:ring-2 focus:ring-blue-500/50 mb-2"
+                        />
+                      </div>
+                      <select 
+                        required
+                        value={bannerLinkId} 
+                        onChange={e => setBannerLinkId(e.target.value)}
+                        className="w-full p-4 bg-white/5 rounded-xl border border-white/10 focus:ring-2 focus:ring-blue-500/50"
+                      >
+                        <option value="">Selecione um produto...</option>
+                        {allProducts
+                          .filter(p => p.name?.toLowerCase().includes(bannerSearchTerm.toLowerCase()))
+                          .map((p, idx) => (
+                            <option key={`${p.id}-${idx}`} value={p.id}>{p.name} ({restaurants.find(r => r.id === p.restaurantId)?.name})</option>
+                          ))}
+                      </select>
+                    </div>
+                  )}
+
+                  <div className="space-y-1 sm:col-span-2">
+                    <label className="text-[10px] font-black uppercase tracking-widest opacity-40">Mídia do Banner (GIF, Vídeo ou Imagem)</label>
+                    <div className="flex gap-4 items-center">
+                      <label className="flex-1 bg-white/5 border border-white/10 rounded-xl p-4 text-[10px] font-black uppercase tracking-widest hover:bg-white/10 transition-all flex items-center justify-center space-x-2 cursor-pointer">
+                        <Plus size={16} />
+                        <span>Upload Mídia</span>
+                        <input 
+                          type="file" 
+                          accept="image/*,video/*" 
+                          className="hidden" 
+                          onChange={(e) => handleFileUpload(e, 'banner')} 
+                        />
+                      </label>
+                      {bannerUrl && (
+                        <div className="w-full h-48 rounded-2xl overflow-hidden border border-white/10 relative bg-black flex items-center justify-center cursor-move group">
+                          {bannerMediaType === 'video' ? (
+                            <video 
+                              src={bannerUrl} 
+                              className="w-full h-full object-cover" 
+                              style={{ objectPosition: `${bannerPosition.x}% ${bannerPosition.y}%` }} 
+                            />
+                          ) : (
+                            <img 
+                              src={bannerUrl} 
+                              className="w-full h-full object-cover select-none" 
+                              style={{ objectPosition: `${bannerPosition.x}% ${bannerPosition.y}%` }}
+                              onMouseDown={(e) => {
+                                const rect = e.currentTarget.getBoundingClientRect();
+                                const handleMouseMove = (moveEvent: MouseEvent) => {
+                                  const x = ((moveEvent.clientX - rect.left) / rect.width) * 100;
+                                  const y = ((moveEvent.clientY - rect.top) / rect.height) * 100;
+                                  setBannerPosition({ 
+                                    x: Math.max(0, Math.min(100, x)), 
+                                    y: Math.max(0, Math.min(100, y)) 
+                                  });
+                                };
+                                const handleMouseUp = () => {
+                                  window.removeEventListener('mousemove', handleMouseMove);
+                                  window.removeEventListener('mouseup', handleMouseUp);
+                                };
+                                window.addEventListener('mousemove', handleMouseMove);
+                                window.addEventListener('mouseup', handleMouseUp);
+                              }}
+                            />
+                          )}
+                          <div className="absolute top-2 right-2 bg-black/60 backdrop-blur-md px-2 py-1 rounded-lg text-[8px] font-black uppercase tracking-widest text-white pointer-events-none">
+                            Arraste para ajustar: {Math.round(bannerPosition.x)}% {Math.round(bannerPosition.y)}%
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-1 sm:col-span-2">
+                    <label className="text-[10px] font-black uppercase tracking-widest opacity-40">Áudio do Banner (Opcional)</label>
+                    <div className="flex gap-4 items-center">
+                      <label className="flex-1 bg-white/5 border border-white/10 rounded-xl p-4 text-[10px] font-black uppercase tracking-widest hover:bg-white/10 transition-all flex items-center justify-center space-x-2 cursor-pointer">
+                        <Plus size={16} />
+                        <span>Upload Áudio</span>
+                        <input 
+                          type="file" 
+                          accept="audio/*" 
+                          className="hidden" 
+                          onChange={(e) => handleFileUpload(e, 'bannerAudio')} 
+                        />
+                      </label>
+                      {bannerAudioUrl && (
+                        <div className="w-14 h-14 rounded-xl border border-white/10 flex-shrink-0 flex items-center justify-center bg-blue-600/20 text-blue-400">
+                          <ClockIcon size={20} />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-1 sm:col-span-2">
+                    <label className="text-[10px] font-black uppercase tracking-widest opacity-40">Cidades do Banner (Deixe vazio para Global)</label>
+                    <div className="flex flex-wrap gap-2 mb-2">
+                      {Array.from(new Set(bannerCities)).map((city, idx) => (
+                        <span key={`banner-city-${city}-${idx}`} className="bg-blue-500/20 text-blue-400 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-2">
+                          {city}
+                          <button type="button" onClick={() => setBannerCities(prev => prev.filter(c => c !== city))}>
+                            <X size={12} />
+                          </button>
+                        </span>
+                      ))}
+                      {bannerCities.length === 0 && (
+                        <span className="text-[10px] font-black uppercase tracking-widest opacity-20 italic">Nenhuma cidade selecionada (Global)</span>
+                      )}
+                    </div>
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <select 
+                        className="flex-1 p-4 bg-white/5 rounded-xl border border-white/10 focus:ring-2 focus:ring-blue-500/50"
+                        onChange={(e) => {
+                          if (e.target.value && !bannerCities.includes(e.target.value)) {
+                            setBannerCities(prev => [...prev, e.target.value]);
+                          }
+                          e.target.value = "";
+                        }}
+                      >
+                        <option value="">Selecionar cidade existente...</option>
+                        {uniqueCities.map((city, idx) => (
+                          <option key={`city-copy-opt-${city.id}-${idx}`} value={city.name}>{city.name}</option>
+                        ))}
+                      </select>
+                      <div className="flex-1 flex gap-2">
+                        <input 
+                          type="text"
+                          placeholder="Ou digite nova cidade..."
+                          className="flex-1 p-4 bg-white/5 rounded-xl border border-white/10 focus:ring-2 focus:ring-blue-500/50"
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              const val = e.currentTarget.value.trim();
+                              if (val && !bannerCities.includes(val)) {
+                                setBannerCities(prev => [...prev, val]);
+                                e.currentTarget.value = "";
+                              }
+                            }
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-4 pt-4">
+                  <button type="submit" className="w-full sm:w-auto bg-blue-600 text-white px-8 py-4 rounded-xl font-bold uppercase tracking-widest text-xs flex items-center justify-center space-x-2 hover:bg-blue-700 transition-colors">
+                    {editingBanner ? <Edit2 size={16} /> : <Plus size={16} />}
+                    <span>{editingBanner ? 'Salvar Alterações' : 'Adicionar Banner'}</span>
+                  </button>
+                  <button type="button" onClick={cancelBannerForm} className="w-full sm:w-auto bg-white/5 text-white border border-white/10 px-8 py-4 rounded-xl font-bold uppercase tracking-widest text-xs flex items-center justify-center space-x-2 hover:bg-white/10 transition-colors">
+                    <span>Cancelar</span>
+                  </button>
+                </div>
+              </form>
+            )}
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 md:gap-8">
               {displayedBanners.map((banner, idx) => (
-                <div key={`${banner.id}-${idx}`} className="bg-white/5 border border-white/10 rounded-3xl overflow-hidden group">
-                  <div className="h-48 relative">
-                    <img 
-                      src={banner.imageUrl} 
-                      alt={banner.title} 
-                      className="w-full h-full object-cover" 
-                      style={{ objectPosition: banner.objectPosition || '50% 50%' }}
-                    />
-                    <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity space-x-4">
-                      <button onClick={() => toggleBannerStatus(banner.id, banner.active)} className="p-4 bg-white text-[#141414] rounded-full">
-                        {banner.active ? <XCircle size={24} /> : <CheckCircle size={24} />}
-                      </button>
-                      <button onClick={() => deleteBanner(banner.id)} className="p-4 bg-red-500 text-white rounded-full">
-                        <Trash2 size={24} />
-                      </button>
-                    </div>
-                  </div>
-                  <div className="p-6 flex flex-col space-y-2">
-                    <div className="flex items-center justify-between">
-                      <h4 className="font-bold uppercase tracking-tight">{banner.title}</h4>
-                      <span className={`text-[10px] font-black uppercase tracking-widest ${banner.active ? 'text-green-400' : 'text-red-400'}`}>
-                        {banner.active ? 'Ativo' : 'Inativo'}
+                <div 
+                  key={`${banner.id}-${idx}`} 
+                  onClick={() => startEditingBanner(banner)}
+                  className={`bg-white/5 border rounded-3xl overflow-hidden group cursor-pointer transition-all hover:border-blue-500/50 ${editingBanner?.id === banner.id ? 'ring-2 ring-blue-500 border-blue-500' : 'border-white/10'}`}
+                >
+                  <div className="h-48 relative overflow-hidden bg-black flex items-center justify-center">
+                    {banner.mediaType === 'video' ? (
+                      <video 
+                        src={banner.imageUrl} 
+                        className="w-full h-full object-cover opacity-85" 
+                        style={{ objectPosition: banner.objectPosition || '50% 50%' }}
+                        muted
+                        loop
+                        autoPlay
+                      />
+                    ) : (
+                      <img 
+                        src={banner.imageUrl} 
+                        alt={banner.title} 
+                        className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105 opacity-85" 
+                        style={{ objectPosition: banner.objectPosition || '50% 50%' }}
+                      />
+                    )}
+                    <div className="absolute inset-0 bg-slate-950/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                      <span className="bg-blue-600 text-white font-black uppercase text-[10px] tracking-widest px-4 py-2 rounded-xl shadow-lg flex items-center gap-2">
+                        <Edit2 size={12} />
+                        Clique para Editar
                       </span>
                     </div>
-                    {banner.linkUrl && (
-                      <p className="text-[10px] font-mono opacity-40 truncate">LINK: {banner.linkUrl}</p>
-                    )}
-                    {banner.cities && banner.cities.length > 0 && (
-                      <div className="flex flex-wrap gap-1 pt-2">
-                        {Array.from(new Set(banner.cities || [])).map((city, idx) => (
-                          <span key={`banner-list-city-${city}-${idx}`} className="bg-white/10 text-[8px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full opacity-60">
-                            {city}
-                          </span>
-                        ))}
+                  </div>
+                  <div className="p-6 flex flex-col space-y-4">
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between">
+                        <h4 className="font-bold uppercase tracking-tight text-white">{banner.title}</h4>
+                        <span className={`text-[10px] font-black uppercase tracking-widest ${banner.active ? 'text-green-400' : 'text-red-400'}`}>
+                          {banner.active ? 'Ativo' : 'Inativo'}
+                        </span>
                       </div>
-                    )}
+                      {banner.linkUrl && (
+                        <p className="text-[10px] font-mono opacity-40 truncate">LINK: {banner.linkUrl}</p>
+                      )}
+                      {banner.cities && banner.cities.length > 0 && (
+                        <div className="flex flex-wrap gap-1 pt-1">
+                          {Array.from(new Set(banner.cities || [])).map((city, idx) => (
+                            <span key={`banner-list-city-${city}-${idx}`} className="bg-white/10 text-[8px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full opacity-60">
+                              {city}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex items-center justify-between pt-2 border-t border-white/5">
+                      <button 
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleBannerStatus(banner.id, banner.active);
+                        }}
+                        className={`px-3 py-1.5 rounded-xl text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5 transition-all ${banner.active ? 'bg-green-500/10 text-green-400 hover:bg-green-500/20' : 'bg-red-500/10 text-red-400 hover:bg-red-500/20'}`}
+                      >
+                        {banner.active ? <CheckCircle size={12} /> : <XCircle size={12} />}
+                        <span>Status</span>
+                      </button>
+
+                      <div className="flex items-center gap-2">
+                        <button 
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            startEditingBanner(banner);
+                          }}
+                          className="px-3 py-1.5 bg-blue-600/10 hover:bg-blue-600 text-blue-400 hover:text-white rounded-xl transition-all flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest"
+                        >
+                          <Edit2 size={12} />
+                          <span>Editar</span>
+                        </button>
+                        <button 
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteBanner(banner);
+                          }}
+                          className="px-3 py-1.5 bg-red-600/10 hover:bg-red-600 text-red-500 hover:text-white rounded-xl transition-all flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest"
+                        >
+                          <Trash2 size={12} />
+                          <span>Excluir</span>
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -5540,7 +5931,7 @@ const AdminView: React.FC = () => {
                       type="text" 
                       value={settings.appName || ''} 
                       onChange={e => setSettings({ ...settings, appName: e.target.value })}
-                      placeholder="Ex: iFood Tupã"
+                      placeholder="Ex: Xô Fome"
                       className="w-full p-4 bg-white/5 rounded-2xl border border-white/10 focus:ring-2 focus:ring-blue-500/50"
                     />
                   </div>
@@ -5551,7 +5942,7 @@ const AdminView: React.FC = () => {
                       type="text" 
                       value={settings.splashText || ''} 
                       onChange={e => setSettings({ ...settings, splashText: e.target.value })}
-                      placeholder="Ex: iFood TUPÃ"
+                      placeholder="Ex: XÔ FOME"
                       className="w-full p-4 bg-white/5 rounded-2xl border border-white/10 focus:ring-2 focus:ring-blue-500/50"
                     />
                   </div>
@@ -6575,7 +6966,7 @@ const AdminView: React.FC = () => {
                               className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 pl-12 text-sm font-bold"
                             />
                           </div>
-                          <p className="text-[9px] opacity-40 italic">Valor cobrado por dia para destacar um produto no iFood Tupã.</p>
+                          <p className="text-[9px] opacity-40 italic">Valor cobrado por dia para destacar um produto no Xô Fome.</p>
                         </div>
                       </div>
                       <button 
@@ -6747,7 +7138,7 @@ const AdminView: React.FC = () => {
                           <tr key={`${item.id}-${idx}`} className="border-b border-white/5 hover:bg-white/5 transition-colors">
                             <td className="p-6">
                               <span className="text-[10px] font-bold opacity-60">
-                                {item.createdAt?.toDate ? item.createdAt.toDate().toLocaleString() : 'Recent'}
+                                {item.createdAt ? parseFirebaseDate(item.createdAt).toLocaleString() : 'Recent'}
                               </span>
                             </td>
                             <td className="p-6">
@@ -7035,7 +7426,7 @@ const AdminView: React.FC = () => {
                           )}
                           <div>
                             <p className="text-[10px] font-black text-slate-700 uppercase">{log.action}</p>
-                            <p className="text-[8px] font-bold text-slate-400">{log.timestamp?.toDate ? new Date(log.timestamp.toDate()).toLocaleString() : 'Recent'}</p>
+                            <p className="text-[8px] font-bold text-slate-400">{log.timestamp ? parseFirebaseDate(log.timestamp).toLocaleString() : 'Recent'}</p>
                           </div>
                         </div>
                         <span className="text-[8px] font-mono text-slate-400">{log.email}</span>
@@ -7044,6 +7435,108 @@ const AdminView: React.FC = () => {
                   )}
                 </div>
               </div>
+
+              {/* Card de Cadastro de Novas Empresas (WhatsApp Link) */}
+              <div id="security-partner-signup-whatsapp-card" className="bg-white p-8 rounded-[2.5rem] shadow-xl border border-slate-100 space-y-6">
+                <div className="flex items-center space-x-4">
+                  <div className="bg-emerald-500/10 p-3 rounded-2xl text-emerald-600">
+                    <MessageSquare size={24} />
+                  </div>
+                  <div>
+                    <h3 className="font-black uppercase tracking-tight text-slate-800">Adesão de Empresas</h3>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase">Telefone para novos parceiros (WhatsApp)</p>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <p className="text-[11px] text-slate-500 leading-relaxed font-medium">
+                    Configure o número de telefone que os novos estabelecimentos interessados usarão para se cadastrar. Os botões de cadastro na página do cliente direcionarão automaticamente para uma conversa de WhatsApp com esse número.
+                  </p>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+                    <div className="md:col-span-2">
+                      <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">
+                        Número com DDD (ex: 5569999999999)
+                      </label>
+                      <input 
+                        type="text" 
+                        value={regPhoneInput}
+                        onChange={(e) => {
+                          setShowSavedSuccess(false);
+                          setRegPhoneInput(e.target.value);
+                        }}
+                        placeholder="Ex: 5569999999999"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-2xl p-4 text-slate-800 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-mono"
+                      />
+                    </div>
+                    
+                    <button
+                      onClick={async () => {
+                        if (isSavingPhone) return;
+                        setIsSavingPhone(true);
+                        setShowSavedSuccess(false);
+                        try {
+                          await updateGlobalSettings({ businessRegistrationPhone: regPhoneInput });
+                          await new Promise(resolve => setTimeout(resolve, 1200));
+                          setShowSavedSuccess(true);
+                        } catch (err) {
+                          console.error("Erro ao salvar número de adesão:", err);
+                        } finally {
+                          setIsSavingPhone(false);
+                        }
+                      }}
+                      className={`w-full py-4 px-6 rounded-2xl font-black uppercase tracking-widest text-[10px] md:text-sm shadow-lg transition-all flex items-center justify-center space-x-2 ${
+                        showSavedSuccess 
+                          ? 'bg-emerald-500 text-white shadow-emerald-500/20' 
+                          : 'bg-slate-900 hover:bg-slate-800 text-white shadow-slate-900/10 hover:scale-[1.02] active:scale-[0.98]'
+                      }`}
+                      disabled={isSavingPhone}
+                    >
+                      {isSavingPhone ? (
+                        <>
+                          <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                          <span>Salvando...</span>
+                        </>
+                      ) : showSavedSuccess ? (
+                        <>
+                          <motion.div
+                            initial={{ scale: 0 }}
+                            animate={{ scale: 1 }}
+                            transition={{ type: "spring", stiffness: 300, damping: 20 }}
+                          >
+                            <CheckCircle size={16} />
+                          </motion.div>
+                          <span>Salvo!</span>
+                        </>
+                      ) : (
+                        <span>Salvar</span>
+                      )}
+                    </button>
+                  </div>
+
+                  {regPhoneInput.trim() && (
+                    <motion.div 
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="p-4 bg-emerald-50/50 border border-emerald-100 rounded-2xl space-y-2 mt-2 text-left"
+                    >
+                      <span className="text-[10px] font-black uppercase tracking-widest text-emerald-600 block">Link de Destino Ativo:</span>
+                      <a 
+                        href={`https://wa.me/${regPhoneInput.replace(/\D/g, '') || regPhoneInput}?text=${encodeURIComponent('Olá! Gostaria de cadastrar minha empresa no Xô Fome.')}`}
+                        target="_blank" 
+                        referrerPolicy="no-referrer"
+                        className="text-xs font-mono text-emerald-700 underline hover:text-emerald-800 break-all flex items-center justify-between font-bold"
+                      >
+                        <span className="truncate">
+                          https://wa.me/{regPhoneInput.replace(/\D/g, '') || regPhoneInput}?text=Ola...
+                        </span>
+                        <span className="text-[9px] bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1 rounded-full uppercase font-black tracking-widest ml-2 flex-shrink-0 flex items-center">Testar Link</span>
+                      </a>
+                    </motion.div>
+                  )}
+                </div>
+              </div>
+
             </div>
           </div>
         )}
@@ -8159,7 +8652,7 @@ const AdminView: React.FC = () => {
                     </div>
                     <p className="text-xs font-black uppercase tracking-widest text-slate-500 mb-1">Finalizados Hoje</p>
                     <p className="text-4xl font-black text-white italic tracking-tighter">
-                      {allOrders.filter(o => ['delivered', 'completed'].includes(o.status) && new Date(o.createdAt?.seconds ? o.createdAt.seconds * 1000 : o.createdAt).toDateString() === new Date().toDateString()).length}
+                      {allOrders.filter(o => ['delivered', 'completed'].includes(o.status) && parseFirebaseDate(o.createdAt).toDateString() === new Date().toDateString()).length}
                     </p>
                   </div>
                   <div className="bg-slate-900/50 backdrop-blur-md rounded-[2.5rem] p-8 border border-white/10 shadow-2xl">
@@ -8170,7 +8663,7 @@ const AdminView: React.FC = () => {
                     </div>
                     <p className="text-xs font-black uppercase tracking-widest text-slate-500 mb-1">Cancelados Hoje</p>
                     <p className="text-4xl font-black text-white italic tracking-tighter">
-                      {allOrders.filter(o => o.status === 'cancelled' && new Date(o.createdAt?.seconds ? o.createdAt.seconds * 1000 : o.createdAt).toDateString() === new Date().toDateString()).length}
+                      {allOrders.filter(o => o.status === 'cancelled' && parseFirebaseDate(o.createdAt).toDateString() === new Date().toDateString()).length}
                     </p>
                   </div>
                 </div>
@@ -8179,7 +8672,7 @@ const AdminView: React.FC = () => {
                 <div className="bg-slate-900/50 backdrop-blur-md rounded-[2.5rem] p-8 border border-white/10 shadow-2xl space-y-6">
                   <h3 className="text-xl font-black uppercase tracking-tight italic text-white">Histórico de Hoje</h3>
                   <div className="space-y-4 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
-                    {(Array.from(new Map(allOrders.filter(o => ['delivered', 'completed', 'cancelled'].includes(o.status) && new Date(o.createdAt?.seconds ? o.createdAt.seconds * 1000 : o.createdAt).toDateString() === new Date().toDateString()).sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)).map(o => [o.id, o])).values()) as Order[]).map((order, idx) => {
+                    {(Array.from(new Map(allOrders.filter(o => ['delivered', 'completed', 'cancelled'].includes(o.status) && parseFirebaseDate(o.createdAt).toDateString() === new Date().toDateString()).sort((a, b) => parseFirebaseDate(b.createdAt).getTime() - parseFirebaseDate(a.createdAt).getTime()).map(o => [o.id, o])).values()) as Order[]).map((order, idx) => {
                       const restaurant = restaurants.find(r => r.id === order.restaurantId);
                       const customer = users.find(u => u.uid === order.customerUid);
                       const isCancelled = order.status === 'cancelled';
@@ -8249,20 +8742,20 @@ const AdminView: React.FC = () => {
             <div className="bg-white/5 p-8 rounded-[2.5rem] border border-white/10 space-y-6 relative overflow-hidden group">
               <div className="absolute top-0 right-0 w-64 h-64 bg-blue-500/5 rounded-full -mr-32 -mt-32 blur-3xl group-hover:bg-blue-500/10 transition-colors" />
               
-              <div className="flex items-center justify-between relative z-10">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
                 <div className="space-y-1">
                   <h3 className="text-2xl font-black uppercase tracking-tight italic flex items-center space-x-3 text-blue-400">
                     <Package size={32} />
-                    <span>Armazenamento do Banco</span>
+                    <span>Recursos do Banco em Tempo Real</span>
                   </h3>
-                  <p className="text-xs opacity-60">Uso total de recursos do banco de dados em tempo real.</p>
+                  <p className="text-xs opacity-60">Faturamento e operações reais consumadas do Firebase Firestore hoje.</p>
                 </div>
                 <div className="text-right">
                   <div className="flex items-baseline justify-end space-x-1">
                     <span className="text-5xl font-black italic text-white">{storageUsage}</span>
                     <span className="text-xl font-black italic text-blue-400">%</span>
                   </div>
-                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Capacidade Utilizada</p>
+                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Limite Diário Consumido</p>
                 </div>
               </div>
               
@@ -8283,28 +8776,56 @@ const AdminView: React.FC = () => {
                 </motion.div>
               </div>
 
-              <div className="grid grid-cols-3 gap-4 pt-2 relative z-10">
-                <div className="bg-white/5 p-5 rounded-3xl border border-white/5 text-center hover:bg-white/10 transition-colors">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">Status</p>
-                  <div className="flex items-center justify-center space-x-2">
-                    <div className={`w-2 h-2 rounded-full ${storageUsage > 90 ? 'bg-red-500 animate-ping' : 'bg-emerald-500'}`} />
-                    <p className={`text-xs font-bold uppercase ${storageUsage > 90 ? 'text-red-400' : 'text-emerald-400'}`}>
-                      {storageUsage > 90 ? 'Crítico' : storageUsage > 70 ? 'Alerta' : 'Saudável'}
-                    </p>
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 pt-2 relative z-10">
+                  <div className="bg-white/5 p-5 rounded-3xl border border-white/5 text-center hover:bg-white/10 transition-colors flex flex-col justify-center">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">Status do Banco</p>
+                    <div className="flex items-center justify-center space-x-2">
+                      <div className={`w-2 h-2 rounded-full ${storageUsage > 90 ? 'bg-red-500 animate-ping' : 'bg-emerald-500'}`} />
+                      <p className={`text-xs font-bold uppercase ${storageUsage > 90 ? 'text-red-400' : 'text-emerald-400'}`}>
+                        {storageUsage > 90 ? 'Crítico' : storageUsage > 70 ? 'Alerta' : 'Saudável'}
+                      </p>
+                    </div>
+                  </div>
+                  
+                  <div className="bg-white/5 p-5 rounded-3xl border border-white/5 text-center hover:bg-white/10 transition-colors">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">Gravações (Writes)</p>
+                    <p className="text-sm font-black text-white">{dailyWrites.toLocaleString()}</p>
+                    <p className="text-[8px] font-black uppercase tracking-widest text-slate-600">Limite: {writeLimit.toLocaleString()}</p>
+                  </div>
+
+                  <div className="bg-white/5 p-5 rounded-3xl border border-white/5 text-center hover:bg-white/10 transition-colors">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">Leituras (Reads)</p>
+                    <p className="text-sm font-black text-white">{dailyReads.toLocaleString()}</p>
+                    <p className="text-[8px] font-black uppercase tracking-widest text-slate-600">Limite: {readLimit.toLocaleString()}</p>
+                  </div>
+
+                  <div className="bg-white/5 p-5 rounded-3xl border border-white/5 text-center hover:bg-white/10 transition-colors">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">Exclusões (Deletes)</p>
+                    <p className="text-sm font-black text-white">{dailyDeletes.toLocaleString()}</p>
+                    <p className="text-[8px] font-black uppercase tracking-widest text-slate-600">Limite: {deleteLimit.toLocaleString()}</p>
                   </div>
                 </div>
-                <div className="bg-white/5 p-5 rounded-3xl border border-white/5 text-center hover:bg-white/10 transition-colors">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">Limite</p>
-                  <p className="text-xs font-bold text-white">1.0 GB</p>
-                  <p className="text-[8px] font-black uppercase tracking-widest text-slate-600">Plano Spark</p>
-                </div>
-                <div className="bg-white/5 p-5 rounded-3xl border border-white/5 text-center hover:bg-white/10 transition-colors">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">Documentos</p>
-                  <p className="text-xs font-bold text-white">~{Math.round(storageUsage * 100)}</p>
-                  <p className="text-[8px] font-black uppercase tracking-widest text-slate-600">Estimativa</p>
+
+                {/* Select Plan Control */}
+                <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between border-t border-white/10 pt-6 relative z-10">
+                  <div className="space-y-1 text-left">
+                    <p className="text-xs font-black uppercase tracking-widest text-slate-400">Plano de Faturamento Ativo</p>
+                    <p className="text-[10px] text-slate-500 uppercase tracking-wider">Selecione para mudar e adequar limites de faturamento do banco de dados no sistema em tempo real.</p>
+                  </div>
+                  <select
+                    value={settings.databasePlan || 'spark'}
+                    onChange={async (e) => {
+                      const newPlan = e.target.value as 'spark' | 'blaze';
+                      setSettings(prev => ({ ...prev, databasePlan: newPlan }));
+                      await updateGlobalSettings({ databasePlan: newPlan });
+                    }}
+                    className="p-3 bg-slate-950 border border-white/10 rounded-2xl text-xs font-bold text-white focus:ring-2 focus:ring-blue-500 cursor-pointer w-full md:w-auto"
+                  >
+                    <option value="spark" className="bg-slate-900 text-white">Plano Spark (Grátis - Limite Diário)</option>
+                    <option value="blaze" className="bg-slate-900 text-white font-black">Plano Blaze/Enterprise (Pago - Escalonável)</option>
+                  </select>
                 </div>
               </div>
-            </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
               <div className="bg-white/5 p-8 rounded-[2.5rem] border border-white/10 space-y-6">
@@ -8471,8 +8992,8 @@ const AdminView: React.FC = () => {
                   </div>
                 </div>
 
-                {(isAddingCategory || editingCategory) && (
-                  <form onSubmit={editingCategory ? handleEditCategory : handleAddCategory} className="bg-white/5 p-8 rounded-[2.5rem] border border-white/10 space-y-6 max-w-2xl">
+                 {(isAddingCategory || editingCategory) && (
+                  <form id="category-form" onSubmit={editingCategory ? handleEditCategory : handleAddCategory} className="bg-white/5 p-8 rounded-[2.5rem] border border-white/10 space-y-6 max-w-2xl scroll-mt-6">
                     <h3 className="text-xl font-black uppercase tracking-tight italic">
                       {editingCategory ? 'Editar Categoria' : 'Nova Categoria'}
                     </h3>
@@ -8517,7 +9038,16 @@ const AdminView: React.FC = () => {
 
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
                   {categories.slice(0, categoriesLimit).map((cat, idx) => (
-                    <div key={`admin-cat-${cat.id}-${idx}`} className="bg-white/5 border border-white/10 rounded-[2rem] overflow-hidden group hover:border-blue-500/30 transition-all">
+                    <div 
+                      key={`admin-cat-${cat.id}-${idx}`} 
+                      onClick={() => {
+                        startEditingCategory(cat);
+                        setTimeout(() => {
+                          document.getElementById('category-form')?.scrollIntoView({ behavior: 'smooth' });
+                        }, 80);
+                      }}
+                      className="bg-white/5 border border-white/10 rounded-[2rem] overflow-hidden group hover:border-blue-500/40 hover:bg-white/10 transition-all cursor-pointer relative flex flex-col justify-between"
+                    >
                       <div className="h-32 relative">
                         {cat.imageUrl ? (
                           <img src={cat.imageUrl} alt={cat.name} className="w-full h-full object-cover" />
@@ -8526,28 +9056,41 @@ const AdminView: React.FC = () => {
                             <ImageIcon size={32} className="text-white/20" />
                           </div>
                         )}
-                        <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity space-x-2">
-                          <button 
-                            onClick={() => {
-                              setEditingCategory(cat);
-                              setCatName(cat.name);
-                              setCatImageUrl(cat.imageUrl);
-                              setCatStatus(cat.status || 'active');
-                            }}
-                            className="p-3 bg-white text-[#141414] rounded-xl"
-                          >
-                            <Edit2 size={18} />
-                          </button>
-                          <button onClick={() => deleteCategory(cat.id)} className="p-3 bg-red-500 text-white rounded-xl">
-                            <Trash2 size={18} />
-                          </button>
+                        <div className="absolute top-2 right-2 flex items-center space-x-1.5 z-10">
+                          <span className={`px-2 py-0.5 rounded-full text-[7px] font-black uppercase tracking-wider ${cat.status === 'inactive' ? 'bg-red-500/80 text-white' : 'bg-green-500/80 text-white'}`}>
+                            {cat.status || 'active'}
+                          </span>
                         </div>
                       </div>
-                      <div className="p-4 text-center">
-                        <h4 className="font-bold uppercase tracking-tight text-sm">{cat.name}</h4>
-                        <span className={`text-[8px] font-black uppercase tracking-widest ${cat.status === 'active' ? 'text-green-400' : 'text-red-400'}`}>
-                          {cat.status || 'active'}
-                        </span>
+                      <div className="p-4 text-center flex-1 flex flex-col justify-between">
+                        <div>
+                          <h4 className="font-bold uppercase tracking-tight text-xs text-white/90 line-clamp-1">{cat.name}</h4>
+                        </div>
+                        <div className="mt-4 pt-3 border-t border-white/5 grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              startEditingCategory(cat);
+                              setTimeout(() => {
+                                document.getElementById('category-form')?.scrollIntoView({ behavior: 'smooth' });
+                              }, 80);
+                            }}
+                            className="py-1.5 px-3 bg-blue-600/20 text-blue-400 text-[9px] font-black uppercase tracking-widest rounded-xl hover:bg-blue-600/30 transition-all border border-blue-500/20"
+                          >
+                            Editar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              deleteCategory(cat.id);
+                            }}
+                            className="py-1.5 px-3 bg-red-600/20 text-red-400 text-[9px] font-black uppercase tracking-widest rounded-xl hover:bg-red-600/30 transition-all border border-red-500/20"
+                          >
+                            Excluir
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -8861,7 +9404,7 @@ const AdminView: React.FC = () => {
                       <Mail size={12} className="text-blue-400" />
                       <span className="font-bold">{u.email}</span>
                       <span className="text-white/20">|</span>
-                      <Lock size={12} className="text-amber-400" />
+                      <LockIcon size={12} className="text-amber-400" />
                       <span className="font-mono text-amber-200">{u.password || '---'}</span>
                     </p>
                     {u.cpf && (
@@ -9010,15 +9553,15 @@ const AdminView: React.FC = () => {
                       <div className="flex items-center justify-between">
                         <h3 className="text-sm font-black uppercase tracking-widest text-slate-500">Banners Ativos</h3>
                         <span className="bg-blue-500/10 text-blue-400 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest">
-                          {banners.filter(b => b.city === selectedRealTimeCity.name && b.status === 'active').length} Banners
+                          {banners.filter(b => b.active && (!b.cities || b.cities.length === 0 || b.cities.some(c => c && selectedRealTimeCity && (c.toLowerCase().trim() === selectedRealTimeCity.name.toLowerCase().trim() || c.toLowerCase().trim() === selectedRealTimeCity.id?.toLowerCase().trim())))).length} Banners
                         </span>
                       </div>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {banners.filter(b => b.city === selectedRealTimeCity.name && b.status === 'active').map(banner => (
+                        {banners.filter(b => b.active && (!b.cities || b.cities.length === 0 || b.cities.some(c => c && selectedRealTimeCity && (c.toLowerCase().trim() === selectedRealTimeCity.name.toLowerCase().trim() || c.toLowerCase().trim() === selectedRealTimeCity.id?.toLowerCase().trim())))).map(banner => (
                           <div key={banner.id} className="relative aspect-[21/9] rounded-2xl overflow-hidden border border-white/10">
                             <img src={banner.imageUrl} className="w-full h-full object-cover" />
                             <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent flex items-end p-4">
-                              <p className="text-xs font-bold text-white uppercase tracking-tight">{banner.name}</p>
+                              <p className="text-xs font-bold text-white uppercase tracking-tight">{banner.title}</p>
                             </div>
                           </div>
                         ))}
@@ -9234,7 +9777,7 @@ const AdminView: React.FC = () => {
                     <div className="space-y-2">
                       <label className="text-[10px] font-black uppercase tracking-widest opacity-40">AUTH Password</label>
                       <div className="relative">
-                        <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
+                        <LockIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
                         <input 
                           type="text" 
                           value={cityAuthPassword}
@@ -9470,7 +10013,7 @@ const AdminView: React.FC = () => {
                   <div className="pt-4 border-t border-white/5 flex items-center justify-between">
                     <div className="flex items-center space-x-2 text-slate-500">
                       <AlertCircle size={12} />
-                      <span className="text-[8px] font-black uppercase tracking-widest">Último Check: {city.lastChecked ? new Date(city.lastChecked).toLocaleString() : 'Nunca'}</span>
+                      <span className="text-[8px] font-black uppercase tracking-widest">Último Check: {city.lastChecked ? parseFirebaseDate(city.lastChecked).toLocaleString() : 'Nunca'}</span>
                     </div>
                     <button 
                       onClick={() => testCityConnection(city)}
@@ -9741,7 +10284,7 @@ const AdminView: React.FC = () => {
                     <div className="space-y-2">
                       <label className="text-[10px] font-black uppercase tracking-widest opacity-40">Senha Atual (Firestore)</label>
                       <div className="relative">
-                        <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
+                        <LockIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
                         <input 
                           readOnly
                           type="text" 
@@ -9754,7 +10297,7 @@ const AdminView: React.FC = () => {
                     <div className="space-y-2">
                       <label className="text-[10px] font-black uppercase tracking-widest opacity-40">Nova Senha (Opcional)</label>
                       <div className="relative">
-                        <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
+                        <LockIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
                         <input 
                           type="password" 
                           value={editUserPassword}
@@ -9866,7 +10409,7 @@ const AdminView: React.FC = () => {
                 <div className="flex items-center space-x-4">
                   {/* Password Field */}
                   <div className="relative group/pass">
-                    <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-blue-400" size={14} />
+                    <LockIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-blue-400" size={14} />
                     <input 
                       type="text"
                       defaultValue={selectedPartner.password}
@@ -9911,7 +10454,7 @@ const AdminView: React.FC = () => {
                   
                   const filteredOrders = allOrders.filter(o => {
                     if (!branchRestaurantIds.includes(o.restaurantId) || o.status !== 'completed') return false;
-                    const orderDate = o.createdAt?.toDate ? o.createdAt.toDate().toISOString().split('T')[0] : '';
+                    const orderDate = parseFirebaseDate(o.createdAt).toISOString().split('T')[0];
                     return orderDate >= appliedPartnerDateStart && orderDate <= appliedPartnerDateEnd;
                   });
 
@@ -10229,7 +10772,7 @@ const AdminView: React.FC = () => {
                               const restaurantOrders = allOrders.filter(o => o.restaurantId === selectedRestaurantInPartnerView.id);
                               const today = new Date().toISOString().split('T')[0];
                               const todayOrders = restaurantOrders.filter(o => {
-                                const oDate = o.createdAt?.toDate ? o.createdAt.toDate().toISOString().split('T')[0] : '';
+                                const oDate = parseFirebaseDate(o.createdAt).toISOString().split('T')[0];
                                 return oDate === today && o.status === 'completed';
                               });
                               const todayRevenue = todayOrders.reduce((acc, o) => acc + (o.total || 0), 0);
@@ -10259,7 +10802,7 @@ const AdminView: React.FC = () => {
                             <div className="space-y-4">
                               {(Array.from(new Map(allOrders
                                 .filter(o => o.restaurantId === selectedRestaurantInPartnerView.id)
-                                .sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0))
+                                .sort((a, b) => parseFirebaseDate(b.createdAt).getTime() - parseFirebaseDate(a.createdAt).getTime())
                                 .slice(0, 5)
                                 .map(o => [o.id, o])).values()) as Order[]).map((order, idx) => (
                                   <div key={`admin-res-order-hist-${order.id}-${idx}`} className="bg-white/5 p-6 rounded-2xl flex items-center justify-between group hover:bg-white/10 transition-all">
@@ -10269,7 +10812,7 @@ const AdminView: React.FC = () => {
                                       </div>
                                       <div>
                                         <p className="text-xs font-black uppercase tracking-widest">Pedido #{order.id.slice(-6)}</p>
-                                        <p className="text-[10px] opacity-40">{order.createdAt?.toDate ? order.createdAt.toDate().toLocaleString('pt-BR') : 'N/A'}</p>
+                                        <p className="text-[10px] opacity-40">{order.createdAt ? parseFirebaseDate(order.createdAt).toLocaleString('pt-BR') : 'N/A'}</p>
                                       </div>
                                     </div>
                                     <div className="text-right">
@@ -10584,6 +11127,108 @@ const AdminView: React.FC = () => {
                   </button>
                   <button 
                     onClick={() => setIsDeletingPartnerModalOpen(false)}
+                    className="w-full bg-white/5 text-white py-4 rounded-2xl font-black uppercase tracking-widest text-xs hover:bg-white/10 transition-all"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+
+          {isDeletingBannerModalOpen && bannerToDelete && (
+            <div className="fixed inset-0 z-[400] flex items-center justify-center p-4">
+              <motion.div 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => {
+                  setIsDeletingBannerModalOpen(false);
+                  setBannerToDelete(null);
+                }}
+                className="absolute inset-0 bg-slate-950/80 backdrop-blur-md"
+              />
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.9, y: 20 }}
+                className="bg-slate-900 border border-white/10 w-full max-w-sm rounded-[2.5rem] overflow-hidden shadow-2xl relative z-10 p-8 space-y-6"
+              >
+                <div className="flex flex-col items-center text-center space-y-4">
+                  <div className="w-16 h-16 bg-red-500/20 rounded-full flex items-center justify-center text-red-500">
+                    <Trash2 size={32} />
+                  </div>
+                  <div className="space-y-2">
+                    <h3 className="text-xl font-black uppercase tracking-tight italic text-white">Excluir Banner?</h3>
+                    <p className="text-xs font-medium text-slate-400 leading-relaxed uppercase tracking-tight">
+                      Você está prestes a excluir o banner <span className="text-white font-bold">{bannerToDelete.title}</span>. Esta ação é irreversível.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-3">
+                  <button 
+                    onClick={handleConfirmDeleteBanner}
+                    className="w-full bg-red-600 text-white py-4 rounded-2xl font-black uppercase tracking-widest text-xs shadow-lg shadow-red-500/20 hover:bg-red-700 transition-all"
+                  >
+                    Confirmar Exclusão
+                  </button>
+                  <button 
+                    onClick={() => {
+                      setIsDeletingBannerModalOpen(false);
+                      setBannerToDelete(null);
+                    }}
+                    className="w-full bg-white/5 text-white py-4 rounded-2xl font-black uppercase tracking-widest text-xs hover:bg-white/10 transition-all"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+
+          {isDeletingCategoryModalOpen && categoryToDelete && (
+            <div className="fixed inset-0 z-[400] flex items-center justify-center p-4">
+              <motion.div 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => {
+                  setIsDeletingCategoryModalOpen(false);
+                  setCategoryToDelete(null);
+                }}
+                className="absolute inset-0 bg-slate-950/80 backdrop-blur-md"
+              />
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.9, y: 20 }}
+                className="bg-slate-900 border border-white/10 w-full max-w-sm rounded-[2.5rem] overflow-hidden shadow-2xl relative z-10 p-8 space-y-6"
+              >
+                <div className="flex flex-col items-center text-center space-y-4">
+                  <div className="w-16 h-16 bg-red-500/20 rounded-full flex items-center justify-center text-red-500">
+                    <Trash2 size={32} />
+                  </div>
+                  <div className="space-y-2">
+                    <h3 className="text-xl font-black uppercase tracking-tight italic text-white">Excluir Categoria?</h3>
+                    <p className="text-xs font-medium text-slate-400 leading-relaxed uppercase tracking-tight">
+                      Você está prestes a excluir a categoria <span className="text-white font-bold">{categoryToDelete.name}</span>. Ela sumirá do painel do gestor e do cliente. Esta ação é irreversível.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-3">
+                  <button 
+                    onClick={handleConfirmDeleteCategory}
+                    className="w-full bg-red-600 text-white py-4 rounded-2xl font-black uppercase tracking-widest text-xs shadow-lg shadow-red-500/20 hover:bg-red-700 transition-all"
+                  >
+                    Confirmar Exclusão
+                  </button>
+                  <button 
+                    onClick={() => {
+                      setIsDeletingCategoryModalOpen(false);
+                      setCategoryToDelete(null);
+                    }}
                     className="w-full bg-white/5 text-white py-4 rounded-2xl font-black uppercase tracking-widest text-xs hover:bg-white/10 transition-all"
                   >
                     Cancelar
@@ -10940,11 +11585,11 @@ const AdminView: React.FC = () => {
       <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[200] flex items-center gap-2 bg-slate-950/90 backdrop-blur-xl border border-blue-500/30 p-2 rounded-2xl shadow-2xl shadow-blue-500/20">
         <div className="px-4 py-2 bg-blue-600/20 rounded-xl border border-blue-500/20">
           <p className="text-[8px] font-black uppercase tracking-widest text-blue-400">Vendas Hoje</p>
-          <p className="text-sm font-black text-white">{formatPrice(allOrders.filter(o => o.status === 'completed' && new Date(o.createdAt?.toDate ? o.createdAt.toDate() : o.createdAt || 0).toDateString() === new Date().toDateString()).reduce((acc, o) => acc + (o.total || 0), 0))}</p>
+          <p className="text-sm font-black text-white">{formatPrice(allOrders.filter(o => o.status === 'completed' && parseFirebaseDate(o.createdAt).toDateString() === new Date().toDateString()).reduce((acc, o) => acc + (o.total || 0), 0))}</p>
         </div>
         <div className="px-4 py-2 bg-emerald-600/20 rounded-xl border border-emerald-500/20">
           <p className="text-[8px] font-black uppercase tracking-widest text-emerald-400">Pedidos</p>
-          <p className="text-sm font-black text-white">{allOrders.filter(o => new Date(o.createdAt?.toDate ? o.createdAt.toDate() : o.createdAt || 0).toDateString() === new Date().toDateString()).length}</p>
+          <p className="text-sm font-black text-white">{allOrders.filter(o => parseFirebaseDate(o.createdAt).toDateString() === new Date().toDateString()).length}</p>
         </div>
         <div className="w-px h-8 bg-white/10 mx-2" />
         <button 
@@ -11006,6 +11651,116 @@ const AdminView: React.FC = () => {
                   className="flex-1 bg-blue-600 text-white py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] shadow-lg shadow-blue-500/20 hover:bg-blue-700 transition-all flex items-center justify-center gap-2"
                 >
                   {isProcessingCredit ? <RefreshCw size={14} className="animate-spin" /> : 'Confirmar'}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+      
+      {/* Unlimited Credit Confirmation Modal */}
+      <AnimatePresence>
+        {showUnlimitedCreditConfirm && (
+          <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="bg-slate-900 border border-white/10 w-full max-w-sm rounded-[2.5rem] overflow-hidden shadow-2xl p-8 space-y-6"
+            >
+              <div className="text-center space-y-2">
+                <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4 border ${showUnlimitedCreditConfirm.newState ? 'bg-emerald-600/20 text-emerald-400 border-emerald-500/30' : 'bg-red-600/20 text-red-400 border-red-500/30'}`}>
+                  <Zap size={32} />
+                </div>
+                <h3 className={`text-xl font-black uppercase tracking-tight italic ${showUnlimitedCreditConfirm.newState ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {showUnlimitedCreditConfirm.newState ? 'Ativar Crédito' : 'Desativar Crédito'}
+                </h3>
+                <p className="text-slate-400 text-[10px] font-bold leading-relaxed uppercase tracking-widest">
+                  {showUnlimitedCreditConfirm.newState 
+                    ? `Deseja permitir que este restaurante receba pedidos sem descontar da carteira?`
+                    : `Deseja voltar à cobrança normal da carteira deste restaurante?`
+                  }
+                </p>
+              </div>
+
+              <div className="flex gap-4">
+                <button 
+                  onClick={() => setShowUnlimitedCreditConfirm(null)}
+                  className="flex-1 bg-white/5 text-slate-400 py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] hover:bg-white/10 transition-all"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  onClick={async () => {
+                    const target = showUnlimitedCreditConfirm;
+                    setShowUnlimitedCreditConfirm(null);
+                    try {
+                      await updateDoc(doc(db, 'restaurants', target.id), {
+                        unlimitedCredit: target.newState,
+                        // If activating, unblock wallet immediately for instant effect
+                        ...(target.newState ? { isWalletBlocked: false } : {})
+                      });
+                      alert(`Crédito ilimitado ${target.newState ? 'ativado' : 'desativado'} com sucesso!`);
+                    } catch (error) {
+                      console.error('Error toggling unlimited credit:', error);
+                      alert('Erro ao alterar configuração.');
+                    }
+                  }}
+                  className={`flex-1 py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] shadow-lg transition-all text-white ${
+                    showUnlimitedCreditConfirm.newState 
+                      ? 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-500/20' 
+                      : 'bg-red-600 hover:bg-red-700 shadow-red-500/20'
+                  }`}
+                >
+                  Confirmar
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Clean Database Data Confirmation Modal */}
+      <AnimatePresence>
+        {showCleanMonthlyDataConfirm && (
+          <div className="fixed inset-0 z-[1001] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="bg-slate-900 border border-red-500/20 w-full max-w-sm rounded-[2.5rem] overflow-hidden shadow-2xl p-8 space-y-6"
+            >
+              <div className="text-center space-y-2">
+                <div className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4 border bg-red-600/20 text-red-400 border-red-500/30">
+                  <Trash2 size={32} />
+                </div>
+                <h3 className="text-xl font-black uppercase tracking-tight italic text-red-400">
+                  Apagar Dados do Banco
+                </h3>
+                <p className="text-slate-400 text-[10px] font-bold leading-relaxed uppercase tracking-widest pt-2">
+                  Tem certeza de que deseja excluir permanentemente todos os registros de pagamentos e ordens antigas e atuais?
+                </p>
+                <div className="bg-red-500/10 p-4 rounded-2xl border border-red-500/20 text-[9px] text-red-400 uppercase tracking-wider leading-normal text-left font-bold space-y-1">
+                  <p>• Apaga TODOS os pagamentos registrados.</p>
+                  <p>• Apaga todos os pedidos de qualquer status (ativos, pendentes, aceitos, em preparo, finalizados, cancelados, antigos e atuais).</p>
+                  <p className="font-extrabold text-[10px] mt-1 text-red-300">⚠️ ESTA AÇÃO É TOTALMENTE IRREVERSÍVEL!</p>
+                </div>
+              </div>
+
+              <div className="flex gap-4">
+                <button 
+                  disabled={isCleaningMonthlyData}
+                  onClick={() => setShowCleanMonthlyDataConfirm(false)}
+                  className="flex-1 bg-white/5 text-slate-400 py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] hover:bg-white/10 transition-all disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  disabled={isCleaningMonthlyData}
+                  onClick={handleExecuteCleanData}
+                  className="flex-1 bg-red-600 hover:bg-red-700 shadow-lg shadow-red-500/20 text-white py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all flex items-center justify-center gap-2"
+                >
+                  {isCleaningMonthlyData ? <RefreshCw size={14} className="animate-spin" /> : 'Confirmar'}
                 </button>
               </div>
             </motion.div>

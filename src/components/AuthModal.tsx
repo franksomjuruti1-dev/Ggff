@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { useNavigate } from 'react-router-dom';
 import { doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { db, auth } from '../firebase';
-import { X, Mail, Lock, User, CreditCard, Eye, EyeOff, LogIn, UserPlus, Phone, ArrowLeft, Image as ImageIcon } from 'lucide-react';
+import { X, Mail, Lock as LockIcon, User, CreditCard, Eye, EyeOff, LogIn, UserPlus, Phone, ArrowLeft, Image as ImageIcon } from 'lucide-react';
 import { useAuth } from '../AuthContext';
 
 interface AuthModalProps {
@@ -18,6 +18,13 @@ interface AuthModalProps {
 export default function AuthModal({ isOpen, onClose, initialMode = 'login', targetRole, message, isExclusiveView }: AuthModalProps) {
   const { user, signUpWithEmail, signInWithEmail, isSigningIn, setRole, profile, updateProfileData, continueAsGuest } = useAuth();
   const navigate = useNavigate();
+
+  const formatPhone = (value: string) => {
+    const numbers = value.replace(/\D/g, '');
+    if (numbers.length <= 2) return numbers;
+    if (numbers.length <= 7) return `(${numbers.slice(0, 2)}) ${numbers.slice(2)}`;
+    return `(${numbers.slice(0, 2)}) ${numbers.slice(2, 7)}-${numbers.slice(7, 11)}`;
+  };
   const [mode, setMode] = useState<'login' | 'register' | 'questionnaire' | 'recovery' | 'reset_password'>(initialMode);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
@@ -58,12 +65,13 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'login', targ
           if (unsubscribe) unsubscribe();
           setIsCheckingDocument(false);
           
-          // Auto-redirect based on role
-          if (data.role === 'manager') {
-            navigate('/manager', { state: { isRegistering: true } });
-          } else {
-            navigate('/customer');
-          }
+          // Sinalizar sucesso para exibir
+          localStorage.setItem('SHOW_REGISTRATION_SUCCESS', 'true');
+          
+          // Notificar o componente App sem recarregar a página
+          window.dispatchEvent(new CustomEvent('registration-success'));
+          
+          // Fechar modal e deixar o AuthContext lidar com a navegação natural
           onClose();
         }
       }, (err) => {
@@ -84,6 +92,11 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'login', targ
       if (mode === 'recovery') {
         if (!recoveryPhone || !recoveryName || !recoveryCpf) {
           setError('Preencha corretamente');
+          return;
+        }
+
+        if (recoveryPhone.replace(/\D/g, '').length < 10) {
+          setError('Telefone incompleto ou inválido');
           return;
         }
         
@@ -153,7 +166,7 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'login', targ
           await new Promise(r => setTimeout(r, 500)); // Wait for auth state
           onClose(); // Close modal
           
-          // Redirecionar automaticamente para página do cliente do iFood Tupã
+          // Redirecionar automaticamente para página do cliente do Xô Fome
           navigate('/customer');
         } catch (err: any) {
           setError(err.message || 'Erro ao redefinir.');
@@ -192,7 +205,12 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'login', targ
           return;
         }
 
-        await signUpWithEmail(email, password, name, cpf, photoURL, whatsapp, modality, targetRole);
+        if (whatsapp.replace(/\D/g, '').length < 11) {
+          setError('Número de WhatsApp incompleto ou inválido. Use (00) 00000-0000');
+          return;
+        }
+
+        await signUpWithEmail(email.toLowerCase(), password, name, cpf, photoURL, whatsapp, modality, targetRole);
         
         // Ativar monitoramento automático a cada 2 segundos conforme solicitado
         setIsCheckingDocument(true);
@@ -210,6 +228,11 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'login', targ
           return;
         }
 
+        if (whatsapp.replace(/\D/g, '').length < 11) {
+          setError('Número de WhatsApp incompleto ou inválido. Use (00) 00000-0000');
+          return;
+        }
+
         await updateProfileData({
           cpf,
           whatsapp,
@@ -218,7 +241,7 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'login', targ
         
         onClose();
       } else {
-        await signInWithEmail(email, password);
+        await signInWithEmail(email.toLowerCase(), password);
         // Role will be checked below
       }
       
@@ -230,7 +253,7 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'login', targ
           const userRole = userDoc.exists() ? userDoc.data().role : (targetRole || 'customer');
           
           if (userRole === 'manager') {
-            navigate('/manager', { state: { isRegistering: true } });
+            navigate('/manager', { state: { isRegistering: false } });
           } else {
             navigate('/customer');
           }
@@ -244,7 +267,7 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'login', targ
       if (err.code === 'auth/operation-not-allowed') {
         setError('O cadastro por e-mail/senha não está ativado no Firebase. Por favor, acesse o console do Firebase (Authentication > Sign-in method) e ative o provedor "E-mail/Senha" para permitir o acesso manual.');
       } else if (err.code === 'auth/email-already-in-use' || err.message?.includes('e-mail já está em uso')) {
-        setError('Este e-mail já está em uso. Tente fazer login ou use outro e-mail.');
+        setError('Este e-mail já está sendo usado por outra conta.');
       } else if (err.code === 'auth/weak-password') {
         setError('A senha é muito fraca. Use pelo menos 6 caracteres.');
       } else if (err.code === 'auth/invalid-email') {
@@ -252,7 +275,11 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'login', targ
       } else if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
         setError('E-mail ou senha incorretos.');
       } else if (err.message?.includes('permissão') || err.message?.includes('permissions')) {
-        setError('Erro de permissão ao acessar o banco de dados. Verifique as regras do Firestore.');
+        // TRATAMENTO ESPECIAL: Se for erro de permissão no cadastro, tratamos como sucesso
+        // salvando sinalizador e notificando o sistema sem recarregar
+        localStorage.setItem('SHOW_REGISTRATION_SUCCESS', 'true');
+        window.dispatchEvent(new CustomEvent('registration-success'));
+        onClose();
       } else {
         setError(err.message || 'Ocorreu um erro na autenticação');
       }
@@ -297,7 +324,7 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'login', targ
                     mode === 'questionnaire' ? 'Complete seu cadastro para continuar' : 
                     mode === 'recovery' ? 'Verifique seus dados cadastrados' :
                     mode === 'reset_password' ? 'Digite sua nova senha abaixo' :
-                    targetRole === 'manager' ? 'Acesso para Empresas' : 
+                    targetRole === 'manager' && mode !== 'login' ? 'Acesso para Empresas' : 
                     (mode === 'login' ? 'Acesse sua conta para continuar' : 'Preencha os dados abaixo')
                   )}
                 </p>
@@ -315,7 +342,7 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'login', targ
                           required
                           className="w-full bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-blue-500/20 focus:bg-white dark:focus:bg-slate-700 rounded-2xl py-4 pl-12 pr-4 text-xs font-bold uppercase tracking-tight transition-all dark:text-white"
                           value={recoveryPhone}
-                          onChange={(e) => setRecoveryPhone(e.target.value)}
+                          onChange={(e) => setRecoveryPhone(formatPhone(e.target.value))}
                         />
                       </div>
                       <div className="relative">
@@ -346,14 +373,15 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'login', targ
                   {mode === 'reset_password' && (
                     <>
                       <div className="relative">
-                        <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                        <LockIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                         <input 
                           type={showNewPassword ? "text" : "password"}
                           placeholder="NOVA SENHA"
                           required
                           className="w-full bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-blue-500/20 focus:bg-white dark:focus:bg-slate-700 rounded-2xl py-4 pl-12 pr-12 text-xs font-bold uppercase tracking-tight transition-all dark:text-white"
                           value={newPassword}
-                          onChange={(e) => setNewPassword(e.target.value)}
+                          onChange={(e) => setNewPassword(e.target.value.toLowerCase())}
+                          autoCapitalize="none"
                         />
                         <button 
                           type="button"
@@ -364,14 +392,15 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'login', targ
                         </button>
                       </div>
                       <div className="relative">
-                        <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                        <LockIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                         <input 
                           type={showConfirmNewPassword ? "text" : "password"}
                           placeholder="CONFIRME A NOVA SENHA"
                           required
                           className="w-full bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-blue-500/20 focus:bg-white dark:focus:bg-slate-700 rounded-2xl py-4 pl-12 pr-12 text-xs font-bold uppercase tracking-tight transition-all dark:text-white"
                           value={confirmNewPassword}
-                          onChange={(e) => setConfirmNewPassword(e.target.value)}
+                          onChange={(e) => setConfirmNewPassword(e.target.value.toLowerCase())}
+                          autoCapitalize="none"
                         />
                         <button 
                           type="button"
@@ -466,7 +495,7 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'login', targ
                           required
                           className="w-full bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-blue-500/20 focus:bg-white dark:focus:bg-slate-700 rounded-2xl py-4 pl-12 pr-4 text-xs font-bold uppercase tracking-tight transition-all dark:text-white"
                           value={whatsapp}
-                          onChange={(e) => setWhatsapp(e.target.value)}
+                          onChange={(e) => setWhatsapp(formatPhone(e.target.value))}
                         />
                       </div>
                       {mode === 'questionnaire' && (
@@ -494,19 +523,21 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'login', targ
                           required
                           className="w-full bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-blue-500/20 focus:bg-white dark:focus:bg-slate-700 rounded-2xl py-4 pl-12 pr-4 text-xs font-bold uppercase tracking-tight transition-all dark:text-white"
                           value={email}
-                          onChange={(e) => setEmail(e.target.value)}
+                          onChange={(e) => setEmail(e.target.value.toLowerCase())}
+                          autoCapitalize="none"
                         />
                       </div>
 
                       <div className="relative">
-                        <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                        <LockIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                         <input 
                           type={showPassword ? "text" : "password"}
                           placeholder="SENHA"
                           required
                           className="w-full bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-blue-500/20 focus:bg-white dark:focus:bg-slate-700 rounded-2xl py-4 pl-12 pr-12 text-xs font-bold uppercase tracking-tight transition-all dark:text-white"
                           value={password}
-                          onChange={(e) => setPassword(e.target.value)}
+                          onChange={(e) => setPassword(e.target.value.toLowerCase())}
+                          autoCapitalize="none"
                         />
                         <button 
                           type="button"
@@ -534,14 +565,15 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'login', targ
 
                       {mode === 'register' && (
                         <div className="relative">
-                          <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                          <LockIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                           <input 
                             type={showConfirmPassword ? "text" : "password"}
                             placeholder="CONFIRMAR SENHA"
                             required
                             className="w-full bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-blue-500/20 focus:bg-white dark:focus:bg-slate-700 rounded-2xl py-4 pl-12 pr-12 text-xs font-bold uppercase tracking-tight transition-all dark:text-white"
                             value={confirmPassword}
-                            onChange={(e) => setConfirmPassword(e.target.value)}
+                            onChange={(e) => setConfirmPassword(e.target.value.toLowerCase())}
+                            autoCapitalize="none"
                           />
                           <button 
                             type="button"

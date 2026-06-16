@@ -15,7 +15,7 @@ import {
   Undo2,
   Save,
   Trash2,
-  Lock,
+  Lock as LockIcon,
   Unlock,
   Pause,
   Play,

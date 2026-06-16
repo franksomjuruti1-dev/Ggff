@@ -38,7 +38,7 @@ import {
   Store,
   ShoppingBag,
   Key,
-  Lock
+  Lock as LockIcon
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -370,7 +370,7 @@ const BranchPublicView: React.FC = () => {
           className="w-full max-w-md bg-slate-900 rounded-[3rem] p-10 border border-white/10 shadow-2xl text-center space-y-8"
         >
           <div className="w-20 h-20 bg-blue-600/20 rounded-[2rem] flex items-center justify-center text-blue-400 mx-auto">
-            <Lock size={40} />
+            <LockIcon size={40} />
           </div>
           
           <div className="space-y-2">

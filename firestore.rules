@@ -11,11 +11,14 @@ service cloud.firestore {
     
     function isAdmin() {
       return isSignedIn() && (
+        request.auth.uid == 'backend-system' ||
+        request.auth.uid == 'backend-admin' ||
         request.auth.token.admin == true ||
         request.auth.token.role == 'admin' ||
         request.auth.token.role == 'system' ||
         (request.auth.token.email != null && request.auth.token.email.lower() in [
           'tupass@gmail.com',
+          'tupamobilidade@gmail.com',
           'xofometupa@gmail.com',
           'ifood.clara@gmail.com',
           'ifoodclara@gmail.com',
@@ -26,7 +29,9 @@ service cloud.firestore {
           'backend-system',
           'backend-admin',
           'franksonxofome',
-          'adZ8V1w2bnVm2atLYqsVdiCqNzD3'
+          'adZ8V1w2bnVm2atLYqsVdiCqNzD3',
+          'system-monitor',
+          'service-account-splitter'
         ]
       );
     }
@@ -74,7 +79,14 @@ service cloud.firestore {
       allow update: if (isOwner(userId) || isAdmin()) && (
         isAdmin() || (
           // Standard users cannot change their own roles or critical stats directly
-          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'phone', 'photoUrl', 'address', 'theme', 'vehicleType', 'vehiclePlate', 'vehicleColor', 'whatsapp', 'cpf', 'branchId', 'cityId', 'isGuest', 'location', 'lastActive', 'lastLogin', 'fcmToken'])
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'displayName', 'phone', 'photoUrl', 'address', 'theme', 'vehicleType', 
+            'vehiclePlate', 'vehicleColor', 'whatsapp', 'cpf', 'branchId', 'cityId', 
+            'isGuest', 'location', 'lastActive', 'lastLogin', 'fcmToken',
+            'notificationSettings', 'isOnline', 'lastLatitude', 'lastLongitude', 'lastCity', 'lastAddress',
+            'latitude', 'longitude', 'city', 'status', 'configuracoesDeNotificacao', 'está online',
+            'locationUpdatedAt', 'updatedAt', 'lastUpdate', 'pushToken', 'oneSignalId'
+          ])
         )
       );
     }
@@ -86,7 +98,7 @@ service cloud.firestore {
         isAdmin() || (
            // Protect fields like ownerUid and mod during update
            incoming().ownerUid == existing().ownerUid &&
-           incoming().diff(existing()).affectedKeys().hasAny(['status', 'description', 'imageUrl', 'openingHours', 'closingHours', 'weeklyHours', 'activityExpiresAt', 'forceClosed', 'acceptedPaymentMethods', 'autoVolume', 'screenOverlay', 'pixKey', 'pixType', 'pixConfigType', 'likesCount'])
+           incoming().diff(existing()).affectedKeys().hasAny(['status', 'description', 'imageUrl', 'logoUrl', 'openingHours', 'closingHours', 'weeklyHours', 'activityExpiresAt', 'forceClosed', 'acceptedPaymentMethods', 'autoVolume', 'screenOverlay', 'pixKey', 'pixType', 'pixConfigType', 'likesCount'])
         )
       );
     }
@@ -128,6 +140,7 @@ service cloud.firestore {
            exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
            resource.data.branchId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.branchId)
         ));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.ownerUid == request.auth.uid);
       allow create: if isOwner(uid) || isAdmin();
       allow update: if isAdmin();
     }

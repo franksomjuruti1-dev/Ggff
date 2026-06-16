@@ -4,11 +4,57 @@ import { AuthProvider } from './AuthContext';
 import SplashScreen from './components/SplashScreen';
 import { AnimatePresence, motion } from 'motion/react';
 import { useAuth } from './AuthContext';
-import { Navigation, Star, Utensils, WifiOff, AlertTriangle, Loader2, Database, ShieldAlert, RefreshCw, Bell, X } from 'lucide-react';
+import { Navigation, Star, Utensils, WifiOff, AlertTriangle, Loader2, Database, ShieldAlert, RefreshCw, Bell, X, Check } from 'lucide-react';
 import { db, auth } from './firebase';
 import { doc, getDocFromServer, collection, onSnapshot, query, orderBy, limit } from 'firebase/firestore';
 import { initGlobalSettings } from './utils/initDb';
 import { initPermissionFlow } from './utils/permissions';
+
+const RegistrationSuccessFeedback = () => {
+  const [show, setShow] = useState(false);
+
+  useEffect(() => {
+    const checkFlag = () => {
+      const flag = localStorage.getItem('SHOW_REGISTRATION_SUCCESS');
+      if (flag === 'true') {
+        console.log("[Feedback] Mostrando mensagem de sucesso de cadastro");
+        setShow(true);
+        localStorage.removeItem('SHOW_REGISTRATION_SUCCESS');
+        setTimeout(() => setShow(false), 6000); 
+      }
+    };
+
+    // Check on mount
+    checkFlag();
+
+    // Also listen for the custom event
+    window.addEventListener('registration-success', checkFlag);
+    return () => window.removeEventListener('registration-success', checkFlag);
+  }, []);
+
+  return (
+    <AnimatePresence>
+      {show && (
+        <motion.div
+          initial={{ opacity: 0, scale: 0.9, y: 100 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.8, y: 50 }}
+          className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[10005] w-full max-w-sm px-4"
+        >
+          <div className="bg-green-500 text-white p-6 rounded-[2.5rem] shadow-[0_20px_50px_rgba(34,197,94,0.3)] border-4 border-white/20 backdrop-blur-xl flex flex-col items-center text-center gap-4">
+            <div className="w-16 h-16 bg-white/20 rounded-3xl flex items-center justify-center animate-bounce">
+              <Check size={32} strokeWidth={4} />
+            </div>
+            <div className="space-y-1">
+              <h3 className="text-xl font-black uppercase tracking-tighter italic">Seu cadastro foi feito com sucesso</h3>
+              <p className="text-[10px] font-black uppercase tracking-[0.2em] opacity-80">Seja bem-vindo(a) ao Xô Fome 💛</p>
+            </div>
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+};
 
 interface ErrorBoundaryProps {
   children: ReactNode;
@@ -38,6 +84,34 @@ class ErrorBoundary extends (React.Component as any) {
 
   render() {
     if (this.state.hasError) {
+      const isManagerRoute = typeof window !== 'undefined' && window.location.pathname.includes('/manager');
+
+      if (isManagerRoute) {
+        return (
+          <div className="fixed inset-0 flex items-center justify-center bg-slate-50 dark:bg-slate-950 p-6 z-[99999]">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="bg-white dark:bg-slate-900 rounded-[40px] p-10 max-w-lg w-full shadow-2xl border-4 border-amber-100 dark:border-amber-900/30 text-center space-y-6"
+            >
+              <div className="w-16 h-16 bg-blue-100 dark:bg-blue-900/40 rounded-3xl flex items-center justify-center mx-auto text-blue-600 dark:text-blue-400">
+                <RefreshCw size={32} className="animate-spin" />
+              </div>
+              <h2 className="text-lg font-bold text-slate-800 dark:text-slate-100 leading-snug">
+                Clique em carregar a página para atualizar os pedidos em tempo real
+              </h2>
+              <button 
+                onClick={() => window.location.reload()}
+                className="w-full py-4 bg-brand-blue text-white rounded-2xl font-black uppercase tracking-widest flex items-center justify-center gap-2 hover:opacity-90 transition-opacity shadow-xl shadow-brand-blue/20"
+              >
+                <RefreshCw size={20} />
+                Carregar página
+              </button>
+            </motion.div>
+          </div>
+        );
+      }
+
       let errorMessage = "Ocorreu um erro inesperado.";
 
       try {
@@ -58,16 +132,17 @@ class ErrorBoundary extends (React.Component as any) {
             animate={{ opacity: 1, scale: 1 }}
             className="bg-white dark:bg-slate-900 rounded-[40px] p-10 max-w-lg w-full shadow-2xl border-4 border-amber-100 dark:border-amber-900/30 text-center"
           >
-            <div className="w-20 h-20 bg-amber-100 dark:bg-amber-900/40 rounded-3xl flex items-center justify-center mx-auto mb-8 text-amber-600 dark:text-amber-400">
+            <div className="w-20 h-20 bg-blue-100 dark:bg-blue-900/40 rounded-3xl flex items-center justify-center mx-auto mb-8 text-blue-600 dark:text-blue-400">
               <RefreshCw size={40} />
             </div>
             <h2 className="text-2xl font-black text-slate-900 dark:text-white mb-4 tracking-tight leading-tight">
-              Estamos realizando uma manutenção rápida ⚙️
+              Ops! Algo não saiu como esperado... ⚙️
             </h2>
             <p className="text-slate-600 dark:text-slate-400 mb-8 leading-relaxed font-medium">
-              Olá! Nosso aplicativo está passando por uma manutenção preventiva no momento para melhorar sua experiência e garantir mais estabilidade.
+              Ocorreu um pequeno erro técnico ao carregar esta parte do sistema.
+              Não se preocupe, seus dados estão seguros.
               <br /><br />
-              Em instantes tudo voltará ao normal. Agradecemos pela sua paciência 💛
+              Estamos trabalhando para manter tudo estável. Por favor, tente recarregar a página. 💛
             </p>
             <button 
               onClick={() => window.location.reload()}
@@ -98,6 +173,7 @@ import LandingPage from './components/LandingPage';
 import CustomerView from './components/CustomerView';
 import ManagerView from './components/ManagerView';
 import CourierView from './components/CourierView';
+import LocationCapturePage from './components/LocationCapturePage';
 const BranchPublicView = lazy(() => import('./components/BranchPublicView'));
 const PermissionManager = lazy(() => import('./components/PermissionManager').then(m => ({ default: m.PermissionManager })));
 const PermissionStatusIndicator = lazy(() => import('./components/PermissionManager').then(m => ({ default: m.PermissionStatusIndicator })));
@@ -124,7 +200,7 @@ const AnimatedRoutes = ({ triggerSplash, splashComplete }: { triggerSplash: () =
   const isAdmin = location.pathname === '/admin';
   
   return (
-    <AnimatePresence mode="wait" initial={false}>
+    <AnimatePresence initial={false}>
       <motion.div
         key={location.pathname}
         initial={isAdmin ? { opacity: 1 } : { opacity: 0, y: 10 }}
@@ -143,6 +219,7 @@ const AnimatedRoutes = ({ triggerSplash, splashComplete }: { triggerSplash: () =
             <Route path="/branch/:branchId" element={<BranchPublicView />} />
             <Route path="/courier" element={<CourierView />} />
             <Route path="/store/:restaurantId" element={<CustomerView />} />
+            <Route path="/localizacao" element={<LocationCapturePage />} />
           </Routes>
         </Suspense>
       </motion.div>
@@ -550,8 +627,16 @@ const NotificationListener = () => {
 };
 
 const MainContent = () => {
-  const [showSplash, setShowSplash] = useState(true);
-  const [splashComplete, setSplashComplete] = useState(false);
+  const [showSplash, setShowSplash] = useState(() => {
+    if (typeof window === 'undefined') return true;
+    const params = new URLSearchParams(window.location.search);
+    return !(params.has('r') || window.location.pathname.includes('/store/') || window.location.pathname.includes('/manager'));
+  });
+  const [splashComplete, setSplashComplete] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    const params = new URLSearchParams(window.location.search);
+    return params.has('r') || window.location.pathname.includes('/store/') || window.location.pathname.includes('/manager');
+  });
   const { commonData } = useAuth();
 
   // Prefetch other pages in the background for ultra-fast navigation
@@ -602,6 +687,23 @@ const MainContent = () => {
   };
 
   useEffect(() => {
+    // Check if we should skip splash screen (direct link)
+    const params = new URLSearchParams(window.location.search);
+    const isExclusiveLink = params.has('r') || window.location.pathname.startsWith('/store/') || window.location.pathname.includes('/manager');
+    const isAlreadyLoaded = localStorage.getItem('isLoadedAtLeastOnce') === 'true';
+
+    if (isExclusiveLink) {
+      console.log("[App] Exclusive link detected, skipping splash animation.");
+      setShowSplash(false);
+      setSplashComplete(true);
+    }
+    
+    if (splashComplete) {
+      localStorage.setItem('isLoadedAtLeastOnce', 'true');
+    }
+  }, [splashComplete]);
+
+  useEffect(() => {
     if (splashComplete) {
       const hasTriggered = localStorage.getItem('customer_permission_triggered');
       if (!hasTriggered) {
@@ -621,7 +723,8 @@ const MainContent = () => {
       <FirebaseStatus />
       <MaintenanceOverlay />
       <NotificationListener />
-      <AnimatePresence mode="wait">
+      <RegistrationSuccessFeedback />
+      <AnimatePresence>
         {showSplash ? (
           <SplashScreen 
             key="splash" 

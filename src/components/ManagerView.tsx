@@ -41,7 +41,7 @@ import {
   AreaChart,
   Area
 } from 'recharts';
-import { Plus, Minus, Edit2, Trash2, Clock, Store, Utensils, LogOut, ChevronRight, ChevronDown, LogIn, X, XCircle, Edit, Package, Star, Bike, Car, MapPin, Image as ImageIcon, MessageSquare, Copy, ExternalLink, Share2, Globe, ShieldCheck, RefreshCw, DollarSign, MessageCircle, ShieldAlert, CreditCard, User, ChevronLeft, ClipboardList, QrCode, Download, TrendingUp, TrendingDown, Calendar, Volume2, Smartphone, Music, Play, Pause, Printer, Bluetooth, Check, CheckCircle, Navigation, Video, Zap, History, ArrowUpRight, ArrowDownRight, Loader2, Search, Flame, AlertCircle, AlertTriangle } from 'lucide-react';
+import { Plus, Minus, Edit2, Trash2, Clock, Store, Utensils, LogOut, ChevronRight, ChevronDown, LogIn, X, XCircle, Edit, Package, Star, Bike, Car, MapPin, Image as ImageIcon, MessageSquare, Copy, ExternalLink, Share2, Globe, ShieldCheck, RefreshCw, DollarSign, MessageCircle, ShieldAlert, CreditCard, User, ChevronLeft, ClipboardList, QrCode, Download, TrendingUp, TrendingDown, Calendar, Volume2, Smartphone, Music, Play, Pause, Printer, Bluetooth, Check, CheckCircle, Navigation, Video, Zap, History, ArrowUpRight, ArrowDownRight, Loader2, Search, Flame, AlertCircle, AlertTriangle, Lock as LockIcon } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { compressImage } from '../utils/image';
 import { formatTimeInput } from '../utils/format';
@@ -117,6 +117,7 @@ interface Restaurant {
   screenOverlay?: boolean;
   forceClosed?: boolean;
   city?: string;
+  cityId?: string;
   splitPayConfig?: {
     pixKey: string;
     pixKeyType: 'cpf' | 'cnpj' | 'email' | 'phone' | 'random';
@@ -291,6 +292,7 @@ interface GlobalSettings {
   monthlyFee?: number;
   defaultDueDay?: number;
   trialPeriodDays?: number;
+  businessRegistrationPhone?: string;
 }
 
 interface SplitPayHistory {
@@ -336,11 +338,33 @@ interface ProductAvailability {
 
 const formatTimeDiff = (order: any, currentTime: Date) => {
   if (!order.createdAt) return '00:00:00';
-  const start = order.createdAt.toDate ? order.createdAt.toDate() : new Date(order.createdAt);
+  
+  let start: Date;
+  if (typeof order.createdAt.toDate === 'function') {
+    start = order.createdAt.toDate();
+  } else if (order.createdAt instanceof Date) {
+    start = order.createdAt;
+  } else {
+    start = new Date(order.createdAt);
+  }
+  
+  if (isNaN(start.getTime())) {
+    start = currentTime;
+  }
   
   let end = currentTime;
   if (['delivered', 'cancelled', 'rejected'].includes(order.status) && order.updatedAt) {
-    end = order.updatedAt.toDate ? order.updatedAt.toDate() : new Date(order.updatedAt);
+    let parsedEnd: Date | null = null;
+    if (typeof order.updatedAt.toDate === 'function') {
+      parsedEnd = order.updatedAt.toDate();
+    } else if (order.updatedAt instanceof Date) {
+      parsedEnd = order.updatedAt;
+    } else {
+      parsedEnd = new Date(order.updatedAt);
+    }
+    if (parsedEnd && !isNaN(parsedEnd.getTime())) {
+      end = parsedEnd;
+    }
   }
   
   const diff = Math.max(0, end.getTime() - start.getTime());
@@ -354,11 +378,33 @@ const formatTimeDiff = (order: any, currentTime: Date) => {
 
 const getOrderColor = (order: any, currentTime: Date, limitMinutes: number) => {
   if (!order.createdAt) return { border: 'border-slate-100', text: 'text-slate-400', isExpired: false };
-  const start = order.createdAt.toDate ? order.createdAt.toDate() : new Date(order.createdAt);
+  
+  let start: Date;
+  if (typeof order.createdAt.toDate === 'function') {
+    start = order.createdAt.toDate();
+  } else if (order.createdAt instanceof Date) {
+    start = order.createdAt;
+  } else {
+    start = new Date(order.createdAt);
+  }
+  
+  if (isNaN(start.getTime())) {
+    start = currentTime;
+  }
   
   let end = currentTime;
   if (['delivered', 'cancelled', 'rejected'].includes(order.status) && order.updatedAt) {
-    end = order.updatedAt.toDate ? order.updatedAt.toDate() : new Date(order.updatedAt);
+    let parsedEnd: Date | null = null;
+    if (typeof order.updatedAt.toDate === 'function') {
+      parsedEnd = order.updatedAt.toDate();
+    } else if (order.updatedAt instanceof Date) {
+      parsedEnd = order.updatedAt;
+    } else {
+      parsedEnd = new Date(order.updatedAt);
+    }
+    if (parsedEnd && !isNaN(parsedEnd.getTime())) {
+      end = parsedEnd;
+    }
   }
   
   const diffMinutes = (end.getTime() - start.getTime()) / 60000;
@@ -370,18 +416,113 @@ const getOrderColor = (order: any, currentTime: Date, limitMinutes: number) => {
   return { border: 'border-emerald-500 shadow-lg shadow-emerald-500/20', text: 'text-emerald-500', isExpired };
 };
 
+const safeFormatDate = (dateField: any): string => {
+  if (!dateField) return 'N/A';
+  try {
+    let d: Date;
+    if (typeof dateField.toDate === 'function') {
+      d = dateField.toDate();
+    } else if (dateField instanceof Date) {
+      d = dateField;
+    } else if (typeof dateField === 'object' && dateField.seconds !== undefined) {
+      d = new Date(dateField.seconds * 1000);
+    } else {
+      d = new Date(dateField);
+    }
+    if (isNaN(d.getTime())) return 'N/A';
+    return d.toLocaleString('pt-BR');
+  } catch (e) {
+    return 'N/A';
+  }
+};
+
+const safeFormatDateOnly = (dateField: any): string => {
+  if (!dateField) return 'N/A';
+  try {
+    let d: Date;
+    if (typeof dateField.toDate === 'function') {
+      d = dateField.toDate();
+    } else if (dateField instanceof Date) {
+      d = dateField;
+    } else if (typeof dateField === 'object' && dateField.seconds !== undefined) {
+      d = new Date(dateField.seconds * 1000);
+    } else {
+      d = new Date(dateField);
+    }
+    if (isNaN(d.getTime())) return 'N/A';
+    return d.toLocaleDateString('pt-BR');
+  } catch (e) {
+    return 'N/A';
+  }
+};
+
+const safeFormatTimeOnly = (dateField: any): string => {
+  if (!dateField) return 'N/A';
+  try {
+    let d: Date;
+    if (typeof dateField.toDate === 'function') {
+      d = dateField.toDate();
+    } else if (dateField instanceof Date) {
+      d = dateField;
+    } else if (typeof dateField === 'object' && dateField.seconds !== undefined) {
+      d = new Date(dateField.seconds * 1000);
+    } else {
+      d = new Date(dateField);
+    }
+    if (isNaN(d.getTime())) return 'N/A';
+    return d.toLocaleTimeString('pt-BR');
+  } catch (e) {
+    return 'N/A';
+  }
+};
+
+const safeGetDate = (dateField: any): Date | null => {
+  if (!dateField) return null;
+  try {
+    let d: Date;
+    if (typeof dateField.toDate === 'function') {
+      d = dateField.toDate();
+    } else if (dateField instanceof Date) {
+      d = dateField;
+    } else if (typeof dateField === 'object' && dateField.seconds !== undefined) {
+      d = new Date(dateField.seconds * 1000);
+    } else {
+      d = new Date(dateField);
+    }
+    if (isNaN(d.getTime())) return null;
+    return d;
+  } catch (e) {
+    return null;
+  }
+};
+
 const ManagerView: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { user, profile, globalSettings, isGuest, isSigningIn, continueAsGuest, signOut, setRole, commonData, managerData, refreshWallet } = useAuth();
+  const { user, profile, globalSettings, isGuest, isSigningIn, continueAsGuest, signOut, setRole, commonData, managerData, refreshWallet, loading } = useAuth();
   const isAdmin = profile?.role === 'admin';
   const isPremium = profile?.subscriptionStatus === 'active';
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
-  const [restaurant, setRestaurant] = useState<Restaurant | null>(managerData.restaurant);
+  const [restaurant, setRestaurant] = useState<Restaurant | null>(managerData?.restaurant || null);
+  const [hasScrolledToOrders, setHasScrolledToOrders] = useState(false);
+
+  // Smooth scroll to orders section when restaurant data is loaded
+  useEffect(() => {
+    if (restaurant && !hasScrolledToOrders) {
+      const timer = setTimeout(() => {
+        const element = document.getElementById('orders-section');
+        if (element) {
+          element.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          setHasScrolledToOrders(true);
+        }
+      }, 600);
+      return () => clearTimeout(timer);
+    }
+  }, [restaurant, hasScrolledToOrders]);
   
   // Sync local state when managerData is preloaded or updated
   useEffect(() => {
-    if (managerData.restaurant) {
+    if (managerData?.restaurant) {
       setRestaurant(managerData.restaurant);
       setResPixConfigType(managerData.restaurant.pixConfigType || 'none');
       setResPixKey(managerData.restaurant.pixKey || '');
@@ -398,11 +539,11 @@ const ManagerView: React.FC = () => {
       if (managerData.restaurant.weeklyHours) setWeeklyHours(managerData.restaurant.weeklyHours);
       setResScreenOverlay(managerData.restaurant.screenOverlay || false);
     }
-    if (managerData.foodItems) setFoodItems(managerData.foodItems);
-    if (managerData.rides) setRides(managerData.rides);
-    if (managerData.reviews) setReviews(managerData.reviews);
-    if (managerData.popups) setPopups(managerData.popups);
-    if (managerData.banners) setBanners(managerData.banners);
+    if (Array.isArray(managerData?.foodItems)) setFoodItems(managerData.foodItems);
+    if (Array.isArray(managerData?.rides)) setRides(managerData.rides);
+    if (Array.isArray(managerData?.reviews)) setReviews(managerData.reviews);
+    if (Array.isArray(managerData?.popups)) setPopups(managerData.popups);
+    if (Array.isArray(managerData?.banners)) setBanners(managerData.banners);
   }, [managerData]);
 
   const [cityData, setCityData] = useState<City | null>(null);
@@ -414,30 +555,30 @@ const ManagerView: React.FC = () => {
   const [selectedCourierDetails, setSelectedCourierDetails] = useState<any>(null);
   const [categoryMode, setCategoryMode] = useState<'mode1' | 'mode2' | null>(null);
   const [isLoadingCategories, setIsLoadingCategories] = useState(false);
-  const [resName, setResName] = useState(managerData.restaurant?.name || '');
-  const [resWhatsapp, setResWhatsapp] = useState(managerData.restaurant?.whatsapp || '');
-  const [resModality, setResModality] = useState<'restaurante' | 'mercado' | 'farmácia' | 'lanche' | 'padaria' | 'bebidas' | 'pet shop' | 'shopping gourmet'>(managerData.restaurant?.modality || 'restaurante');
-  const [resReferencePoint, setResReferencePoint] = useState(managerData.restaurant?.referencePoint || '');
-  const [resAutoVolume, setResAutoVolume] = useState(managerData.restaurant?.autoVolume || false);
-  const [resAutoPrintOrders, setResAutoPrintOrders] = useState(managerData.restaurant?.autoPrintOrders ?? true);
-  const [resMonthlyBillingEnabled, setResMonthlyBillingEnabled] = useState(managerData.restaurant?.monthlyBillingEnabled || false);
-  const [resCity, setResCity] = useState(managerData.restaurant?.city || '');
-  const [resCityId, setResCityId] = useState(managerData.restaurant?.cityId || '');
-  const [resLat, setResLat] = useState<number | null>(managerData.restaurant?.latitude || null);
-  const [resLon, setResLon] = useState<number | null>(managerData.restaurant?.longitude || null);
-  const [resPixConfigType, setResPixConfigType] = useState<'company' | 'central' | 'none'>(managerData.restaurant?.pixConfigType || 'company');
-  const [resPixKey, setResPixKey] = useState(managerData.restaurant?.pixKey || '');
-  const [resPixType, setResPixType] = useState<string>(managerData.restaurant?.pixType || 'cpf');
-  const [resPixReceiver, setResPixReceiver] = useState(managerData.restaurant?.pixReceiver || '');
-  const [resAcceptedPayments, setResAcceptedPayments] = useState<string[]>(managerData.restaurant?.acceptedPaymentMethods || ['pix', 'cash', 'card']);
-  const [resDesc, setResDesc] = useState(managerData.restaurant?.description || '');
-  const [resOpen, setResOpen] = useState(managerData.restaurant?.openingHours || '08:00');
-  const [resClose, setResClose] = useState(managerData.restaurant?.closingHours || '22:00');
-  const [resImg, setResImg] = useState(managerData.restaurant?.imageUrl || '');
-  const [resOrderSoundUrl, setResOrderSoundUrl] = useState(managerData.restaurant?.orderSoundUrl || '');
-  const [resMessageSoundUrl, setResMessageSoundUrl] = useState(managerData.restaurant?.messageSoundUrl || '');
-  const [resForceClosed, setResForceClosed] = useState(managerData.restaurant?.forceClosed || false);
-  const [weeklyHours, setWeeklyHours] = useState<WeeklyHours>(managerData.restaurant?.weeklyHours || {
+  const [resName, setResName] = useState(managerData?.restaurant?.name || '');
+  const [resWhatsapp, setResWhatsapp] = useState(managerData?.restaurant?.whatsapp || '');
+  const [resModality, setResModality] = useState<'restaurante' | 'mercado' | 'farmácia' | 'lanche' | 'padaria' | 'bebidas' | 'pet shop' | 'shopping gourmet'>(managerData?.restaurant?.modality || 'restaurante');
+  const [resReferencePoint, setResReferencePoint] = useState(managerData?.restaurant?.referencePoint || '');
+  const [resAutoVolume, setResAutoVolume] = useState(managerData?.restaurant?.autoVolume || false);
+  const [resAutoPrintOrders, setResAutoPrintOrders] = useState(managerData?.restaurant?.autoPrintOrders ?? true);
+  const [resMonthlyBillingEnabled, setResMonthlyBillingEnabled] = useState(managerData?.restaurant?.monthlyBillingEnabled || false);
+  const [resCity, setResCity] = useState(managerData?.restaurant?.city || '');
+  const [resCityId, setResCityId] = useState(managerData?.restaurant?.cityId || '');
+  const [resLat, setResLat] = useState<number | null>(managerData?.restaurant?.latitude || null);
+  const [resLon, setResLon] = useState<number | null>(managerData?.restaurant?.longitude || null);
+  const [resPixConfigType, setResPixConfigType] = useState<'company' | 'central' | 'none'>(managerData?.restaurant?.pixConfigType || 'company');
+  const [resPixKey, setResPixKey] = useState(managerData?.restaurant?.pixKey || '');
+  const [resPixType, setResPixType] = useState<string>(managerData?.restaurant?.pixType || 'cpf');
+  const [resPixReceiver, setResPixReceiver] = useState(managerData?.restaurant?.pixReceiver || '');
+  const [resAcceptedPayments, setResAcceptedPayments] = useState<string[]>(managerData?.restaurant?.acceptedPaymentMethods || ['pix', 'cash', 'card']);
+  const [resDesc, setResDesc] = useState(managerData?.restaurant?.description || '');
+  const [resOpen, setResOpen] = useState(managerData?.restaurant?.openingHours || '08:00');
+  const [resClose, setResClose] = useState(managerData?.restaurant?.closingHours || '22:00');
+  const [resImg, setResImg] = useState(managerData?.restaurant?.imageUrl || '');
+  const [resOrderSoundUrl, setResOrderSoundUrl] = useState(managerData?.restaurant?.orderSoundUrl || '');
+  const [resMessageSoundUrl, setResMessageSoundUrl] = useState(managerData?.restaurant?.messageSoundUrl || '');
+  const [resForceClosed, setResForceClosed] = useState(managerData?.restaurant?.forceClosed || false);
+  const [weeklyHours, setWeeklyHours] = useState<WeeklyHours>(managerData?.restaurant?.weeklyHours || {
     monday: { open: '08:00', close: '22:00', closed: false, closesForLunch: false, lunchStart: '12:00', lunchEnd: '14:00' },
     tuesday: { open: '08:00', close: '22:00', closed: false, closesForLunch: false, lunchStart: '12:00', lunchEnd: '14:00' },
     wednesday: { open: '08:00', close: '22:00', closed: false, closesForLunch: false, lunchStart: '12:00', lunchEnd: '14:00' },
@@ -448,8 +589,8 @@ const ManagerView: React.FC = () => {
   });
   const [isCreating, setIsCreating] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
-  const [resScreenOverlay, setResScreenOverlay] = useState(managerData.restaurant?.screenOverlay || false);
-  const [foodItems, setFoodItems] = useState<FoodItem[]>(managerData.foodItems);
+  const [resScreenOverlay, setResScreenOverlay] = useState(managerData?.restaurant?.screenOverlay || false);
+  const [foodItems, setFoodItems] = useState<FoodItem[]>(managerData?.foodItems || []);
   const [optimisticStatuses, setOptimisticStatuses] = useState<Record<string, Order['status']>>({});
   
   const orders = useMemo(() => {
@@ -466,7 +607,7 @@ const ManagerView: React.FC = () => {
       const next = { ...prev };
       let changed = false;
       Object.keys(next).forEach(id => {
-        const realOrder = managerData.orders?.find(o => o.id === id);
+        const realOrder = (managerData?.orders || []).find(o => o.id === id);
         if (realOrder && statusRank[realOrder.status] >= statusRank[next[id]]) {
           delete next[id];
           changed = true;
@@ -475,11 +616,12 @@ const ManagerView: React.FC = () => {
       return changed ? next : prev;
     });
   }, [managerData.orders]);
-  const [rides, setRides] = useState<Ride[]>(managerData.rides);
-  const [reviews, setReviews] = useState<Review[]>(managerData.reviews);
-  const [popups, setPopups] = useState<MarketingPopup[]>(managerData.popups);
-  const [banners, setBanners] = useState<Banner[]>(managerData.banners);
-  const [categories, setCategories] = useState<Category[]>(commonData.categories);
+
+  const [rides, setRides] = useState<Ride[]>(Array.isArray(managerData?.rides) ? managerData.rides : []);
+  const [reviews, setReviews] = useState<Review[]>(Array.isArray(managerData?.reviews) ? managerData.reviews : []);
+  const [popups, setPopups] = useState<MarketingPopup[]>(Array.isArray(managerData?.popups) ? managerData.popups : []);
+  const [banners, setBanners] = useState<Banner[]>(Array.isArray(managerData?.banners) ? managerData.banners : []);
+  const [categories, setCategories] = useState<Category[]>(Array.isArray(commonData?.categories) ? commonData.categories : []);
   const [activeTab, setActiveTab] = useState<'menu' | 'orders' | 'reviews' | 'finance' | 'billing' | 'printers'>('orders');
   const [isEditingRestaurant, setIsEditingRestaurant] = useState(false);
   const [isAddingItem, setIsAddingItem] = useState(false);
@@ -498,6 +640,53 @@ const ManagerView: React.FC = () => {
   const [showStepTutorial, setShowStepTutorial] = useState(false);
   const [tutorialStep, setTutorialStep] = useState(0);
   const [filterStatus, setFilterStatus] = useState('all');
+  const [orderFilterDate, setOrderFilterDate] = useState<string>('');
+  const [closedOrdersLimit, setClosedOrdersLimit] = useState<number>(0);
+
+  useEffect(() => {
+    setClosedOrdersLimit(0);
+  }, [filterStatus, orderFilterDate]);
+
+  const getOrderDateString = (o: any) => {
+    if (!o || !o.createdAt) return '';
+    const dObj = o.createdAt.seconds ? new Date(o.createdAt.seconds * 1000) : new Date(o.createdAt);
+    const yyyy = dObj.getFullYear();
+    const mm = String(dObj.getMonth() + 1).padStart(2, '0');
+    const dd = String(dObj.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  };
+
+  const processedOrdersData = useMemo(() => {
+    const uniqueOrders = Array.from(new Map(orders.map(o => [o.id, o])).values()) as Order[];
+    
+    const filtered = uniqueOrders.filter(o => {
+      const matchesStatus = filterStatus === 'all' || 
+        (filterStatus === 'cancelled' ? (o.status === 'cancelled' || o.status === 'rejected') : o.status === filterStatus);
+      const matchesDate = !orderFilterDate || getOrderDateString(o) === orderFilterDate;
+      return matchesStatus && matchesDate;
+    });
+
+    const sorted = [...filtered].sort((a, b) => {
+      const priority: any = { pending: 0, preparing: 1, ready: 2, delivering: 3, en_route: 4, delivered: 5, rejected: 6, cancelled: 7 };
+      if (priority[a.status] !== priority[b.status]) {
+        return priority[a.status] - priority[b.status];
+      }
+      return (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0);
+    });
+
+    const active = sorted.filter(o => !['delivered', 'completed', 'cancelled', 'rejected'].includes(o.status));
+    const closed = sorted.filter(o => ['delivered', 'completed', 'cancelled', 'rejected'].includes(o.status));
+
+    return { active, sortedAll: sorted, closed };
+  }, [orders, filterStatus, orderFilterDate]);
+
+  const displayedClosedOrders = useMemo(() => {
+    return processedOrdersData.closed.slice(0, closedOrdersLimit);
+  }, [processedOrdersData.closed, closedOrdersLimit]);
+
+  const finalOrdersToRender = useMemo(() => {
+    return [...processedOrdersData.active, ...displayedClosedOrders];
+  }, [processedOrdersData.active, displayedClosedOrders]);
   const [deletingItemId, setDeletingItemId] = useState<string | null>(null);
   const [menuSearchTerm, setMenuSearchTerm] = useState('');
   const [loadingOrders, setLoadingOrders] = useState<Record<string, boolean>>({});
@@ -547,8 +736,10 @@ const ManagerView: React.FC = () => {
     }
 
     const interval = setInterval(() => {
+      if (!profile?.subscriptionDueDate) return;
       const now = new Date().getTime();
       const dueDate = new Date(profile.subscriptionDueDate).getTime();
+      if (isNaN(dueDate)) return;
       const diff = dueDate - now;
 
       if (diff <= 0) {
@@ -575,16 +766,17 @@ const ManagerView: React.FC = () => {
     return () => clearInterval(timer);
   }, []);
 
-  const [printers, setPrinters] = useState<Printer[]>(managerData.printers);
+  const [printers, setPrinters] = useState<Printer[]>(Array.isArray(managerData?.printers) ? managerData.printers : []);
   const [isAddingPrinter, setIsAddingPrinter] = useState(false);
   const [editingPrinter, setEditingPrinter] = useState<Printer | null>(null);
   const [isTestingPrinter, setIsTestingPrinter] = useState(false);
 
-  const [wallet, setWallet] = useState<Wallet | null>(managerData.wallet);
+  const [wallet, setWallet] = useState<Wallet | null>(managerData?.wallet || null);
   const minBalance = globalSettings?.minWalletBalance ?? 5;
   const isBalanceLow = useMemo(() => {
     // Constant hardcoded global admin list for absolute bypass
     const globalAdmins = [
+      'tupamobilidade@gmail.com',
       'entrega.rapida247@gmail.com', 
       'ifoodtupa4@gmail.com', 
       'foddtopmendes@gmail.com',
@@ -594,13 +786,17 @@ const ManagerView: React.FC = () => {
     const isGlobalAdmin = user?.email && globalAdmins.includes(user.email.toLowerCase());
 
     if (isGlobalAdmin || isGuest) return false;
+    
+    // CRITICAL: If unlimited credit is active, balance is NEVER considered low for blocking purposes
+    if (restaurant?.unlimitedCredit) return false;
+
     if (!wallet) return true; // Bloqueia por padrão se a carteira não estiver carregada
     
     // Se o balanço for positivo (mesmo que baixo), permitimos o uso mas mostramos aviso se < minBalance
     // Mas para o bloqueio real visual, só bloqueamos se for <= 0
     return wallet.balance <= 0;
-  }, [wallet, minBalance, user, isGuest]);
-  const [walletTransactions, setWalletTransactions] = useState<WalletTransaction[]>(managerData.transactions);
+  }, [wallet, minBalance, user, isGuest, restaurant?.unlimitedCredit]);
+  const [walletTransactions, setWalletTransactions] = useState<WalletTransaction[]>(Array.isArray(managerData?.transactions) ? managerData.transactions : []);
   const [activePixPayment, setActivePixPayment] = useState<PixPayment | null>(null);
   const [isGeneratingPix, setIsGeneratingPix] = useState(false);
   const [isRecharging, setIsRecharging] = useState(false);
@@ -1495,7 +1691,7 @@ const ManagerView: React.FC = () => {
                       <div>
                         <p className="text-xs font-black uppercase tracking-tight dark:text-white">{tx.description || (tx.type === 'recharge' ? 'Recarga de Crédito' : 'Dedução de Crédito')}</p>
                         <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                          {tx.createdAt?.toDate ? tx.createdAt.toDate().toLocaleString('pt-BR') : new Date(tx.createdAt).toLocaleString('pt-BR')}
+                          {safeFormatDate(tx.createdAt)}
                         </p>
                       </div>
                     </div>
@@ -1518,8 +1714,8 @@ const ManagerView: React.FC = () => {
   );
 
   const getMinutesPassed = (createdAt: any) => {
-    if (!createdAt) return 0;
-    const date = createdAt.toDate ? createdAt.toDate() : new Date(createdAt);
+    const date = safeGetDate(createdAt);
+    if (!date) return 0;
     const diff = Math.floor((new Date().getTime() - date.getTime()) / 60000);
     return diff;
   };
@@ -1750,8 +1946,8 @@ const ManagerView: React.FC = () => {
               const mapped = categorias.map((c: any, cIdx: number) => ({
                 id: `cat-mode1-${cIdx}-${c.id || c.categoria_id || 'no-id'}`,
                 nome: c.categoria_nome || c.nome || 'Categoria',
-                preco: c.estimativa_valor || c.valor || c.preco,
-                distancia: c.estimativa_distancia || c.distancia || c.km || c.km_distancia
+                preco: Number(c.valor_total || c.estimativa_valor || c.valor || c.preco || 0),
+                distancia: Number(c.estimativa_distancia || c.distancia || c.km || c.km_distancia || 0)
               }));
               setApiCategories(mapped);
               setCategoryMode('mode1');
@@ -1773,7 +1969,7 @@ const ManagerView: React.FC = () => {
           const mapped = categoriesData.map((c: any, cIdx: number) => ({
             id: `cat-mode2-${cIdx}-${c.id || 'no-id'}`,
             nome: c.categoria_nome || c.nome || 'Categoria',
-            preco: c.estimativa_valor || c.preco || c.valor
+            preco: Number(c.valor_total || c.estimativa_valor || c.preco || c.valor || 0)
           }));
           setApiCategories(mapped);
           setCategoryMode('mode2');
@@ -2038,7 +2234,7 @@ const ManagerView: React.FC = () => {
 
           await updateDoc(doc(db, 'orders', order.id), {
             deliveryFee: newFee,
-            tupaCategory: selectedCategoryName || 'TUPÃ',
+            tupaCategory: selectedCategoryName || 'XÔ FOME',
             total: newTotal,
             updatedAt: serverTimestamp()
           });
@@ -2726,6 +2922,10 @@ const ManagerView: React.FC = () => {
         setResOpen(data.openingHours);
         setResClose(data.closingHours);
         setResImg(data.imageUrl);
+        setResCity(data.city || '');
+        setResCityId(data.cityId || '');
+        setResLat(data.latitude || null);
+        setResLon(data.longitude || null);
         setResPixConfigType(data.pixConfigType || 'none');
         setResPixKey(data.pixKey || '');
         setResPixType(data.pixType || 'cpf');
@@ -2743,15 +2943,15 @@ const ManagerView: React.FC = () => {
         setResImg(profile?.photoURL || user?.photoURL || '');
       }
 
-      setPopups(managerData.popups);
-      setBanners(managerData.banners);
-      setFoodItems(managerData.foodItems);
-      setReviews(managerData.reviews);
-      setRides(managerData.rides);
-      setWallet(managerData.wallet);
-      setWalletTransactions(managerData.transactions);
-      setSplitPayHistory(managerData.splitPayHistory);
-      setPrinters(managerData.printers);
+      setPopups(Array.isArray(managerData.popups) ? managerData.popups : []);
+      setBanners(Array.isArray(managerData.banners) ? managerData.banners : []);
+      setFoodItems(Array.isArray(managerData.foodItems) ? managerData.foodItems : []);
+      setReviews(Array.isArray(managerData.reviews) ? managerData.reviews : []);
+      setRides(Array.isArray(managerData.rides) ? managerData.rides : []);
+      setWallet(managerData.wallet || null);
+      setWalletTransactions(Array.isArray(managerData.transactions) ? managerData.transactions : []);
+      setSplitPayHistory(Array.isArray(managerData.splitPayHistory) ? managerData.splitPayHistory : []);
+      setPrinters(Array.isArray(managerData.printers) ? managerData.printers : []);
     }
   }, [managerData, isGuest, profile, user]);
 
@@ -2886,14 +3086,40 @@ const ManagerView: React.FC = () => {
     }
     
     try {
+      let resolvedCityId = resCityId;
+      let resolvedCity = resCity;
+
+      if (!resolvedCityId || !resolvedCity) {
+        if (resLat != null && resLon != null && commonData.cities && commonData.cities.length > 0) {
+          let closestCity: any = null;
+          let minDistance = Infinity;
+          for (const city of commonData.cities) {
+            const cLat = city.latitude != null ? city.latitude : city.lat;
+            const cLng = city.longitude != null ? city.longitude : city.lng;
+            if (cLat != null && cLng != null && !isNaN(cLat) && !isNaN(cLng)) {
+              const distance = Math.sqrt(Math.pow(cLat - resLat, 2) + Math.pow(cLng - resLon, 2));
+              if (distance < minDistance) {
+                minDistance = distance;
+                closestCity = city;
+              }
+            }
+          }
+          if (closestCity) {
+            resolvedCityId = closestCity.id;
+            resolvedCity = closestCity.name;
+            console.log(`[RestaurantAutoCity] Resolved restaurant city during creation to ${resolvedCity} (ID: ${resolvedCityId}) based on GPS coordinates (${resLat}, ${resLon})`);
+          }
+        }
+      }
+
       const newRestaurantData = {
         name: resName,
         description: resDesc,
         whatsapp: resWhatsapp,
         modality: resModality,
         referencePoint: resReferencePoint,
-        city: resCity,
-        cityId: resCityId,
+        city: resolvedCity,
+        cityId: resolvedCityId,
         latitude: resLat,
         longitude: resLon,
         openingHours: resOpen,
@@ -2977,8 +3203,8 @@ const ManagerView: React.FC = () => {
   // Notification Permission Request
   useEffect(() => {
     if (profile?.role === 'manager' || profile?.role === 'admin') {
-      if (Notification.permission === 'default') {
-        Notification.requestPermission();
+      if (typeof window !== 'undefined' && 'Notification' in window && window.Notification.permission === 'default') {
+        window.Notification.requestPermission();
       }
     }
   }, [profile]);
@@ -2992,12 +3218,16 @@ const ManagerView: React.FC = () => {
         playSound('order', true, restaurant?.orderSoundUrl, restaurant?.autoVolume);
         
         // Browser Notification
-        if (Notification.permission === 'granted' && document.hidden) {
-          new Notification('Novo Pedido!', {
-            body: `Você tem ${pendingOrders.length} pedido(s) pendente(s).`,
-            icon: restaurant?.imageUrl || '/logo.png',
-            tag: 'new-order'
-          });
+        if (typeof window !== 'undefined' && 'Notification' in window && window.Notification.permission === 'granted' && document.hidden) {
+          try {
+            new window.Notification('Novo Pedido!', {
+              body: `Você tem ${pendingOrders.length} pedido(s) pendente(s).`,
+              icon: restaurant?.imageUrl || '/logo.png',
+              tag: 'new-order'
+            });
+          } catch (err) {
+            console.warn('Could not display notification:', err);
+          }
         }
       }
     } else {
@@ -3080,14 +3310,40 @@ const ManagerView: React.FC = () => {
     }
 
     try {
+      let resolvedCityId = resCityId;
+      let resolvedCity = resCity;
+
+      if (!resolvedCityId || !resolvedCity) {
+        if (resLat != null && resLon != null && commonData.cities && commonData.cities.length > 0) {
+          let closestCity: any = null;
+          let minDistance = Infinity;
+          for (const city of commonData.cities) {
+            const cLat = city.latitude != null ? city.latitude : city.lat;
+            const cLng = city.longitude != null ? city.longitude : city.lng;
+            if (cLat != null && cLng != null && !isNaN(cLat) && !isNaN(cLng)) {
+              const distance = Math.sqrt(Math.pow(cLat - resLat, 2) + Math.pow(cLng - resLon, 2));
+              if (distance < minDistance) {
+                minDistance = distance;
+                closestCity = city;
+              }
+            }
+          }
+          if (closestCity) {
+            resolvedCityId = closestCity.id;
+            resolvedCity = closestCity.name;
+            console.log(`[RestaurantAutoCity] Resolved restaurant city during update to ${resolvedCity} (ID: ${resolvedCityId}) based on GPS coordinates (${resLat}, ${resLon})`);
+          }
+        }
+      }
+
       const updateData = {
         name: resName,
         description: resDesc,
         whatsapp: resWhatsapp,
         modality: resModality,
         referencePoint: resReferencePoint,
-        city: resCity,
-        cityId: resCityId,
+        city: resolvedCity,
+        cityId: resolvedCityId,
         latitude: resLat,
         longitude: resLon,
         openingHours: resOpen,
@@ -3224,11 +3480,40 @@ const ManagerView: React.FC = () => {
         return;
       }
 
+      let productCityId = restaurant.cityId || resCityId || null;
+      let productCityName = restaurant.city || resCity || null;
+
+      if (!productCityId || !productCityName) {
+        const rLat = restaurant.latitude != null ? restaurant.latitude : resLat;
+        const rLon = restaurant.longitude != null ? restaurant.longitude : resLon;
+
+        if (rLat != null && rLon != null && commonData.cities && commonData.cities.length > 0) {
+          let closestCity: any = null;
+          let minDistance = Infinity;
+          for (const city of commonData.cities) {
+            const cLat = city.latitude != null ? city.latitude : city.lat;
+            const cLng = city.longitude != null ? city.longitude : city.lng;
+            if (cLat != null && cLng != null && !isNaN(cLat) && !isNaN(cLng)) {
+              const distance = Math.sqrt(Math.pow(cLat - rLat, 2) + Math.pow(cLng - rLon, 2));
+              if (distance < minDistance) {
+                minDistance = distance;
+                closestCity = city;
+              }
+            }
+          }
+          if (closestCity) {
+            productCityId = closestCity.id;
+            productCityName = closestCity.name;
+            console.log(`[ProductSave] Resolved product city to ${productCityName} (ID: ${productCityId}) based on restaurant GPS coordinates (${rLat}, ${rLon})`);
+          }
+        }
+      }
+
       const itemData: any = {
         restaurantId: restaurant.id,
         restaurantName: restaurant.name,
-        cityId: restaurant.cityId || resCityId || null,
-        city: restaurant.city || resCity || null,
+        cityId: productCityId,
+        city: productCityName,
         name: itemName,
         description: itemDesc,
         price: parsedPrice,
@@ -3469,7 +3754,7 @@ const ManagerView: React.FC = () => {
         }
 
         // Sync wallet balance before check to ensure accuracy
-        const currentWallet = await refreshWallet();
+        const currentWallet = await refreshWallet().catch(() => null);
         const activeWallet = currentWallet || wallet;
         
         // Stop the alarm immediately when accepting a new order
@@ -3478,6 +3763,7 @@ const ManagerView: React.FC = () => {
         
         // Check wallet balance
         const globalAdmins = [
+          'tupamobilidade@gmail.com',
           'entrega.rapida247@gmail.com', 
           'ifoodtupa4@gmail.com', 
           'foddtopmendes@gmail.com',
@@ -3489,62 +3775,44 @@ const ManagerView: React.FC = () => {
 
         if (!isGlobalAdmin && !hasUnlimitedCredit) {
           if (!activeWallet) {
-            console.error("Wallet missing", { wallet: activeWallet });
-            alert('Aguarde o carregamento da sua carteira ou recarregue a página.');
-            return;
-          }
-
-          if (!globalSettings) {
-            console.error("Global Settings missing", { globalSettings });
-            alert('Erro ao carregar configurações globais. Tente novamente.');
-            return;
-          }
-
-          const minBalanceAllowed = 0;
-          
-          if (activeWallet.balance <= minBalanceAllowed) {
-            console.warn(`[Wallet] Blocked acceptance. Balance: ${activeWallet.balance}, MinAllowed: ${minBalanceAllowed}`);
-            setShowLowCreditModal(true);
-            return;
-          }
-
-          // Deduct credit using server API to bypass client-side security restrictions
-          try {
+            console.warn("Wallet missing or loading");
+          } else if (!globalSettings) {
+            console.warn("Global Settings missing");
+          } else {
             const deduction = restaurant?.customOrderDeduction ?? (globalSettings.orderDeductionAmount || 2);
             
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
+            // Deduct credit using server API to bypass client-side security restrictions
+            try {
+              const controller = new AbortController();
+              const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
 
-            const response = await fetch('/api/manager/deduct-order-credit', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              signal: controller.signal,
-              body: JSON.stringify({
-                ownerUid: restaurant?.ownerUid || user?.uid,
-                amount: deduction,
-                orderId: orderId,
-                restaurantId: restaurant?.id,
-                restaurantName: restaurant?.name,
-                branchId: restaurant?.branchId || '',
-                cityId: restaurant?.cityId || restaurant?.city || '',
-                cityName: restaurant?.city || ''
-              })
-            });
-            
-            clearTimeout(timeoutId);
+              const response = await fetch('/api/manager/deduct-order-credit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                signal: controller.signal,
+                body: JSON.stringify({
+                  ownerUid: restaurant?.ownerUid || user?.uid,
+                  amount: deduction,
+                  orderId: orderId,
+                  restaurantId: restaurant?.id,
+                  restaurantName: restaurant?.name,
+                  branchId: restaurant?.branchId || '',
+                  cityId: restaurant?.cityId || restaurant?.city || '',
+                  cityName: restaurant?.city || ''
+                })
+              });
+              
+              clearTimeout(timeoutId);
 
-            if (!response.ok) {
-              const errData = await response.json();
-              throw new Error(errData.error || 'Erro na API de carteira');
+              if (!response.ok) {
+                const errData = await response.json().catch(() => ({}));
+                console.warn('API credit deduction error (ignored for seamless acceptance):', errData.error);
+              } else {
+                await refreshWallet().catch(() => null);
+              }
+            } catch (error: any) {
+              console.error("Error deducting credit (ignored):", error);
             }
-            
-            await refreshWallet();
-          } catch (error: any) {
-            console.error("Error deducting credit:", error);
-            const msg = error.name === 'AbortError' ? 'Timeout na API de carteira' : (error.message || 'Erro ao processar crédito');
-            alert(`Erro: ${msg}. Tente de novo.`);
-            setLoadingOrders(prev => ({ ...prev, [orderId]: false }));
-            return;
           }
         }
       }
@@ -3559,7 +3827,7 @@ const ManagerView: React.FC = () => {
       }
 
       if (newStatus === 'delivered') {
-        const ride = rides.find(r => (r.orderId === orderId || r.destinations?.some(d => d.orderId === orderId)) && r.status !== 'cancelled');
+        const ride = (rides || []).find(r => (r.orderId === orderId || r.destinations?.some(d => d.orderId === orderId)) && r.status !== 'cancelled');
         if (ride) {
           updateData.courierName = ride.courierName;
           updateData.courierPhoto = ride.courierPhoto;
@@ -3572,7 +3840,7 @@ const ManagerView: React.FC = () => {
           await updateDoc(doc(db, 'rides', ride.id), {
             status: 'completed',
             updatedAt: serverTimestamp()
-          });
+          }).catch(e => console.error("Error updating ride to completed:", e));
         }
       }
 
@@ -3601,9 +3869,6 @@ const ManagerView: React.FC = () => {
         }
       }
 
-      if (newStatus === 'preparing') {
-        setActiveChatOrderId(orderId);
-      }
       success = true;
     } catch (error) {
       console.error("Error updating order status:", error);
@@ -3614,7 +3879,6 @@ const ManagerView: React.FC = () => {
         delete next[orderId];
         return next;
       });
-      handleFirestoreError(error, OperationType.UPDATE, `orders/${orderId}`);
     } finally {
       if (!success) {
         setOptimisticStatuses(prev => {
@@ -4499,34 +4763,15 @@ const ManagerView: React.FC = () => {
 
   if (!user && !isGuest) {
     return (
-      <div className="min-h-screen bg-bg-app flex flex-col items-center justify-center p-6">
-        <motion.div 
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="bg-white dark:bg-slate-900 rounded-[3rem] p-10 max-w-md w-full shadow-2xl border border-slate-100 dark:border-slate-800 text-center space-y-8"
-        >
-          <div className="w-20 h-20 bg-blue-600 rounded-[2rem] flex items-center justify-center text-white mx-auto shadow-xl shadow-blue-500/20">
-            <Store size={40} />
+      <div className="min-h-screen bg-bg-app flex flex-col items-center justify-center p-6 relative">
+        {!loading ? (
+          <AuthModal isOpen={true} onClose={() => navigate('/home')} targetRole="manager" />
+        ) : (
+          <div className="flex flex-col items-center justify-center">
+            <Loader2 className="w-10 h-10 text-blue-600 animate-spin" />
+            <p className="mt-4 text-[10px] font-black uppercase tracking-widest text-slate-400">Carregando Painel do Gestor...</p>
           </div>
-          <div className="space-y-2">
-            <h2 className="text-2xl md:text-3xl font-black uppercase tracking-tight italic text-blue-gradient">Painel do Gestor</h2>
-            <p className="text-slate-400 text-sm font-bold uppercase tracking-widest">Acesse sua loja para gerenciar pedidos</p>
-          </div>
-          <button 
-            onClick={() => setIsAuthModalOpen(true)}
-            className="w-full py-5 bg-blue-600 text-white rounded-2xl font-black uppercase tracking-widest shadow-lg shadow-blue-500/20 hover:bg-blue-700 transition-all flex items-center justify-center gap-3"
-          >
-            <LogIn size={20} />
-            Entrar na Conta
-          </button>
-          <button 
-            onClick={continueAsGuest}
-            className="w-full py-4 bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-400 rounded-2xl font-black uppercase tracking-widest hover:bg-slate-100 dark:hover:bg-slate-700 transition-all text-[10px]"
-          >
-            Continuar como Convidado
-          </button>
-        </motion.div>
-        <AuthModal isOpen={isAuthModalOpen} onClose={() => setIsAuthModalOpen(false)} targetRole="manager" />
+        )}
       </div>
     );
   }
@@ -4679,7 +4924,7 @@ const ManagerView: React.FC = () => {
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="text-xl font-black italic tracking-tighter uppercase text-blue-gradient">Painel do Gestor</h1>
-                <span className="px-2 py-0.5 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 text-[8px] font-black uppercase tracking-widest rounded-full border border-blue-100 dark:border-blue-800">iFood Tupã</span>
+                <span className="px-2 py-0.5 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 text-[8px] font-black uppercase tracking-widest rounded-full border border-blue-100 dark:border-blue-800">Xô Fome</span>
               </div>
               <div className="flex flex-col mt-0.5">
                 {managerLocation ? (
@@ -4695,11 +4940,11 @@ const ManagerView: React.FC = () => {
               <div className="flex items-center gap-2">
                 {isGuest && <span className="text-[10px] font-black uppercase tracking-widest text-orange-500">Modo Visualização</span>}
                 <button 
-                  onClick={() => navigate('/')}
+                  onClick={() => navigate('/customer')}
                   className="text-[10px] font-black uppercase tracking-widest text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 px-3 py-1.5 rounded-full hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-all flex items-center gap-2 border border-blue-200 dark:border-blue-800 shadow-sm"
                 >
                   <ChevronLeft size={12} />
-                  Ir para iFood Tupã
+                  Ir para Xô Fome
                 </button>
               </div>
             </div>
@@ -4764,7 +5009,7 @@ const ManagerView: React.FC = () => {
                         <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Conta Conectada</p>
                         <p className="text-sm font-bold text-slate-800 dark:text-white truncate">{profile?.email || user?.email}</p>
                         <div className="flex items-center gap-2 mt-0.5">
-                          <Lock size={10} className="text-amber-500" />
+                          <LockIcon size={10} className="text-amber-500" />
                           <p className="text-[10px] font-mono font-bold text-slate-500 truncate select-all">{profile?.password || '********'}</p>
                         </div>
                         <p className="text-[10px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-widest mt-1">{profile?.role === 'admin' ? 'Administrador Master' : 'Gestor de Restaurante'}</p>
@@ -5259,13 +5504,109 @@ const ManagerView: React.FC = () => {
                 </div>
 
                 <div className="md:col-span-2 space-y-2">
-                  <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Descrição</label>
+                  <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Descrição *</label>
                   <textarea 
                     id="resDescCreate"
                     required value={resDesc} onChange={e => setResDesc(e.target.value)}
                     className="w-full bg-slate-50 border-none rounded-2xl p-4 text-sm focus:ring-2 focus:ring-blue-500/20 min-h-[80px]"
                     placeholder="Conte um pouco sobre seu restaurante..."
                   />
+                </div>
+
+                <div className="md:col-span-2 space-y-2">
+                  <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Cidade da Empresa *</label>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Auto layout */}
+                    <div className="bg-slate-50 border-none rounded-2xl p-4 flex items-center justify-between shadow-sm">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center text-blue-600">
+                          <MapPin size={18} />
+                        </div>
+                        <div className="flex flex-col">
+                          <span className="text-[8px] font-black uppercase tracking-widest text-slate-400">Localização por GPS</span>
+                          {isDetectingCity ? (
+                            <div className="flex items-center gap-2 mt-0.5">
+                              <Loader2 size={12} className="animate-spin text-blue-500" />
+                              <span className="text-xs font-bold text-slate-600 italic">Buscando...</span>
+                            </div>
+                          ) : (
+                            <span className="text-sm font-black text-slate-700 dark:text-slate-800 uppercase italic tracking-tighter">{resCity || 'Não detectado'}</span>
+                          )}
+                        </div>
+                      </div>
+                      <button 
+                        type="button"
+                        onClick={() => {
+                          setResCity('');
+                          if ("geolocation" in navigator) {
+                            setIsDetectingCity(true);
+                            navigator.geolocation.getCurrentPosition(
+                              (position) => {
+                                const { latitude, longitude } = position.coords;
+                                setResLat(latitude);
+                                setResLon(longitude);
+                                fetch(`/api/geocode?lat=${latitude}&lon=${longitude}`)
+                                  .then(res => res.json())
+                                  .then(data => {
+                                    if (data && data.address) {
+                                      const cityName = data.address.city || data.address.town || data.address.village || data.address.state || 'Localização Detectada';
+                                      setResCity(cityName);
+                                      const normalizedDetected = cityName.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+                                      if (commonData.cities.length > 0) {
+                                        const matchedCity = commonData.cities.find((c: any) => c.name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim() === normalizedDetected);
+                                        if (matchedCity) {
+                                          setResCityId(matchedCity.id);
+                                        }
+                                      }
+                                    }
+                                  })
+                                  .catch(err => console.error("Error geocoding:", err))
+                                  .finally(() => setIsDetectingCity(false));
+                              },
+                              (err) => {
+                                console.warn(err);
+                                setIsDetectingCity(false);
+                              }
+                            );
+                          }
+                        }}
+                        disabled={isDetectingCity}
+                        className="p-3 hover:bg-blue-100 rounded-xl transition-all text-blue-600 flex items-center gap-2 group disabled:opacity-50"
+                        title="Detectar por GPS"
+                      >
+                        <RefreshCw size={16} className={`group-hover:rotate-180 transition-transform duration-500 ${isDetectingCity ? 'animate-spin' : ''}`} />
+                      </button>
+                    </div>
+
+                    {/* Manual layout */}
+                    <div className="bg-slate-50 border-none rounded-2xl p-4 space-y-2 shadow-sm flex flex-col justify-center">
+                      <span className="text-[8px] font-black uppercase tracking-widest text-slate-400">Selecionar Cidade</span>
+                      <select
+                        value={resCityId}
+                        onChange={(e) => {
+                          const id = e.target.value;
+                          setResCityId(id);
+                          const matchedCity = commonData.cities.find((c: any) => c.id === id);
+                          if (matchedCity) {
+                            setResCity(matchedCity.name);
+                            const cLat = matchedCity.latitude != null ? matchedCity.latitude : matchedCity.lat;
+                            const cLng = matchedCity.longitude != null ? matchedCity.longitude : matchedCity.lng;
+                            if (cLat != null) setResLat(parseFloat(cLat as any));
+                            if (cLng != null) setResLon(parseFloat(cLng as any));
+                          } else {
+                            setResCity('');
+                          }
+                        }}
+                        className="w-full bg-white border-none rounded-xl p-2.5 text-xs font-black uppercase tracking-widest text-slate-700 focus:ring-2 focus:ring-blue-500/20"
+                        required
+                      >
+                        <option value="">Selecione sua cidade...</option>
+                        {commonData.cities.map((city: any) => (
+                          <option key={city.id} value={city.id}>{city.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="md:col-span-2 space-y-3">
@@ -5919,40 +6260,104 @@ const ManagerView: React.FC = () => {
                   </AnimatePresence>
                 </div>
 
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Cidade da Empresa</label>
-                  <div className="bg-slate-50 border-none rounded-2xl p-4 flex items-center justify-between shadow-sm">
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center text-blue-600">
-                        <MapPin size={18} />
+                <div className="md:col-span-2 space-y-2">
+                  <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Cidade da Empresa *</label>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Auto layout */}
+                    <div className="bg-slate-50 border-none rounded-2xl p-4 flex items-center justify-between shadow-sm">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center text-blue-600">
+                          <MapPin size={18} />
+                        </div>
+                        <div className="flex flex-col">
+                          <span className="text-[8px] font-black uppercase tracking-widest text-slate-400">Localização por GPS</span>
+                          {isDetectingCity ? (
+                            <div className="flex items-center gap-2 mt-0.5">
+                              <Loader2 size={12} className="animate-spin text-blue-500" />
+                              <span className="text-xs font-bold text-slate-600 italic">Buscando...</span>
+                            </div>
+                          ) : (
+                            <span className="text-sm font-black text-slate-700 dark:text-slate-800 uppercase italic tracking-tighter">{resCity || 'Não detectado'}</span>
+                          )}
+                        </div>
                       </div>
-                      <div className="flex flex-col">
-                        <span className="text-[8px] font-black uppercase tracking-widest text-slate-400">Localização Automática</span>
-                        {isDetectingCity ? (
-                          <div className="flex items-center gap-2 mt-0.5">
-                            <Loader2 size={12} className="animate-spin text-blue-500" />
-                            <span className="text-xs font-bold text-slate-600 italic">Identificando sua cidade...</span>
-                          </div>
-                        ) : (
-                          <span className="text-sm font-black text-slate-700 dark:text-slate-800 uppercase italic tracking-tighter">{resCity || 'Aguardando GPS...'}</span>
-                        )}
-                      </div>
+                      <button 
+                        type="button"
+                        onClick={() => {
+                          setResCity('');
+                          if ("geolocation" in navigator) {
+                            setIsDetectingCity(true);
+                            navigator.geolocation.getCurrentPosition(
+                              (position) => {
+                                const { latitude, longitude } = position.coords;
+                                setResLat(latitude);
+                                setResLon(longitude);
+                                fetch(`/api/geocode?lat=${latitude}&lon=${longitude}`)
+                                  .then(res => res.json())
+                                  .then(data => {
+                                    if (data && data.address) {
+                                      const cityName = data.address.city || data.address.town || data.address.village || data.address.state || 'Localização Detectada';
+                                      setResCity(cityName);
+                                      const normalizedDetected = cityName.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+                                      if (commonData.cities.length > 0) {
+                                        const matchedCity = commonData.cities.find((c: any) => c.name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim() === normalizedDetected);
+                                        if (matchedCity) {
+                                          setResCityId(matchedCity.id);
+                                        }
+                                      }
+                                    }
+                                  })
+                                  .catch(err => console.error("Error geocoding:", err))
+                                  .finally(() => setIsDetectingCity(false));
+                              },
+                              (err) => {
+                                console.warn(err);
+                                setIsDetectingCity(false);
+                              }
+                            );
+                          }
+                        }}
+                        disabled={isDetectingCity}
+                        className="p-3 hover:bg-blue-100 rounded-xl transition-all text-blue-600 flex items-center gap-2 group disabled:opacity-50"
+                        title="Detectar por GPS"
+                      >
+                        <RefreshCw size={16} className={`group-hover:rotate-180 transition-transform duration-500 ${isDetectingCity ? 'animate-spin' : ''}`} />
+                      </button>
                     </div>
-                    <button 
-                      type="button"
-                      onClick={() => {
-                        setResCity('');
-                      }}
-                      disabled={isDetectingCity}
-                      className="p-3 hover:bg-blue-100 rounded-xl transition-all text-blue-600 flex items-center gap-2 group disabled:opacity-50"
-                    >
-                      <RefreshCw size={16} className={`group-hover:rotate-180 transition-transform duration-500 ${isDetectingCity ? 'animate-spin' : ''}`} />
-                    </button>
+
+                    {/* Manual layout */}
+                    <div className="bg-slate-50 border-none rounded-2xl p-4 space-y-2 shadow-sm flex flex-col justify-center">
+                      <span className="text-[8px] font-black uppercase tracking-widest text-slate-400">Selecionar Cidade</span>
+                      <select
+                        value={resCityId}
+                        onChange={(e) => {
+                          const id = e.target.value;
+                          setResCityId(id);
+                          const matchedCity = commonData.cities.find((c: any) => c.id === id);
+                          if (matchedCity) {
+                            setResCity(matchedCity.name);
+                            const cLat = matchedCity.latitude != null ? matchedCity.latitude : matchedCity.lat;
+                            const cLng = matchedCity.longitude != null ? matchedCity.longitude : matchedCity.lng;
+                            if (cLat != null) setResLat(parseFloat(cLat as any));
+                            if (cLng != null) setResLon(parseFloat(cLng as any));
+                          } else {
+                            setResCity('');
+                          }
+                        }}
+                        className="w-full bg-white border-none rounded-xl p-2.5 text-xs font-black uppercase tracking-widest text-slate-700 focus:ring-2 focus:ring-blue-500/20"
+                        required
+                      >
+                        <option value="">Selecione sua cidade...</option>
+                        {commonData.cities.map((city: any) => (
+                          <option key={city.id} value={city.id}>{city.name}</option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
                   {!resCity && !isDetectingCity && (
-                    <p className="text-[8px] text-red-500 font-bold uppercase mt-1 italic">Por favor, permita o acesso à localização para continuar.</p>
+                    <p className="text-[8px] text-red-500 font-bold uppercase mt-1 italic">Por favor, selecione ou detecte uma cidade para continuar.</p>
                   )}
-                  <p className="text-[8px] text-slate-400 italic mt-1">Sua cidade e localização EXATA (Lat/Lng) são salvas automaticamente via GPS.</p>
+                  <p className="text-[8px] text-slate-400 italic mt-1">Sua cidade e localização serão salvas automaticamente.</p>
                 </div>
                 <div className="md:col-span-2 p-4 bg-slate-50 rounded-3xl border border-slate-100 flex items-center justify-between">
                   <div className="space-y-1">
@@ -6267,8 +6672,12 @@ const ManagerView: React.FC = () => {
                         onClick={async () => {
                           const newValue = !resScreenOverlay;
                           setResScreenOverlay(newValue);
-                          if (newValue && Notification.permission !== 'granted') {
-                            await Notification.requestPermission();
+                          if (newValue && typeof window !== 'undefined' && 'Notification' in window && window.Notification.permission !== 'granted') {
+                            try {
+                              await window.Notification.requestPermission();
+                            } catch (err) {
+                              console.warn('Error requesting notification permission:', err);
+                            }
                           }
                         }}
                         className={`w-12 h-6 rounded-full transition-all relative ${resScreenOverlay ? 'bg-amber-500' : 'bg-slate-200'}`}
@@ -6505,10 +6914,17 @@ const ManagerView: React.FC = () => {
             </div>
 
             {/* Active Highlights Countdown */}
-            {foodItems.filter(item => item.highlightUntil && item.highlightUntil.toDate() > new Date(Date.now() - 600000)).length > 0 && (
+            {foodItems.filter(item => {
+              const hDate = safeGetDate(item.highlightUntil);
+              return hDate && hDate.getTime() > Date.now() - 600000;
+            }).length > 0 && (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {foodItems.filter(item => item.highlightUntil && item.highlightUntil.toDate() > new Date(Date.now() - 600000)).map((item, idx) => {
-                  const timeLeft = item.highlightUntil.toDate().getTime() - currentTime.getTime();
+                {foodItems.filter(item => {
+                  const hDate = safeGetDate(item.highlightUntil);
+                  return hDate && hDate.getTime() > Date.now() - 600000;
+                }).map((item, idx) => {
+                  const hDate = safeGetDate(item.highlightUntil);
+                  const timeLeft = hDate ? hDate.getTime() - currentTime.getTime() : 0;
                   const isExpired = timeLeft <= 0;
                   
                   const diff = Math.abs(timeLeft);
@@ -7332,7 +7748,7 @@ const ManagerView: React.FC = () => {
                         </div>
                       </div>
                       <p className="text-sm text-slate-600">{review.comment}</p>
-                      <p className="text-[10px] text-slate-300">{review.createdAt?.toDate ? review.createdAt.toDate().toLocaleDateString() : new Date(review.createdAt).toLocaleDateString()}</p>
+                      <p className="text-[10px] text-slate-300">{safeFormatDateOnly(review.createdAt)}</p>
                     </div>
                     <button 
                       onClick={() => handleDeleteReview(review.id)} 
@@ -7647,7 +8063,7 @@ const ManagerView: React.FC = () => {
 
         {/* Orders Panel */}
         {restaurant && activeTab === 'orders' && (
-          <section className="space-y-6">
+          <section id="orders-section" className="space-y-6">
             {!restaurant.cityId && (
               <div className="bg-amber-50 border border-amber-200 p-4 rounded-2xl flex items-center justify-between gap-3 text-amber-800">
                 <div className="flex items-center gap-3">
@@ -7748,7 +8164,7 @@ const ManagerView: React.FC = () => {
             )}
 
             {/* Status Filter Bar */}
-            <div className="flex items-center justify-between mb-2">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
               <div className="flex items-center gap-2">
                 <button 
                   onClick={deepRefresh}
@@ -7757,6 +8173,26 @@ const ManagerView: React.FC = () => {
                   <RefreshCw size={14} className={`text-slate-400 group-hover:rotate-180 transition-transform duration-500 ${isRefreshing ? 'animate-spin' : ''}`} />
                   Recarregar página
                 </button>
+              </div>
+
+              {/* Date Filter Input */}
+              <div className="flex items-center gap-2 bg-white px-4 py-2 border-2 border-slate-100 rounded-2xl shadow-sm self-start sm:self-auto">
+                <Calendar size={16} className="text-slate-400" />
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 whitespace-nowrap">Buscar por Data:</span>
+                <input 
+                  type="date"
+                  value={orderFilterDate}
+                  onChange={(e) => setOrderFilterDate(e.target.value)}
+                  className="bg-transparent border-none text-slate-700 text-xs font-bold outline-none focus:ring-0 p-1"
+                />
+                {orderFilterDate && (
+                  <button 
+                    onClick={() => setOrderFilterDate('')}
+                    className="text-[10px] font-black uppercase tracking-widest text-red-500 hover:text-red-600 px-2 pl-3 py-1.5 rounded-xl border border-red-100 bg-red-50/50 hover:bg-red-55 transition-all shadow-sm font-black"
+                  >
+                    Limpar
+                  </button>
+                )}
               </div>
             </div>
 
@@ -7805,19 +8241,16 @@ const ManagerView: React.FC = () => {
                     filterStatus === status.id ? 'bg-white/20' : 'bg-slate-100 text-slate-600'
                   }`}>
                     {status.id === 'all' 
-                      ? orders.length 
+                      ? orders.filter(o => !orderFilterDate || getOrderDateString(o) === orderFilterDate).length 
                       : status.id === 'cancelled'
-                        ? orders.filter(o => o.status === 'cancelled' || o.status === 'rejected').length
-                        : orders.filter(o => o.status === status.id).length}
+                        ? orders.filter(o => (!orderFilterDate || getOrderDateString(o) === orderFilterDate) && (o.status === 'cancelled' || o.status === 'rejected')).length
+                        : orders.filter(o => (!orderFilterDate || getOrderDateString(o) === orderFilterDate) && o.status === status.id).length}
                   </span>
                 </button>
               ))}
             </div>
 
-            {orders.filter(o => 
-              filterStatus === 'all' || 
-              (filterStatus === 'cancelled' ? (o.status === 'cancelled' || o.status === 'rejected') : o.status === filterStatus)
-            ).length === 0 ? (
+            {processedOrdersData.active.length + processedOrdersData.closed.length === 0 ? (
               <div className="bg-white rounded-[3rem] p-20 text-center border-2 border-dashed border-slate-100 space-y-6">
                 <div className="w-24 h-24 bg-slate-50 rounded-full mx-auto flex items-center justify-center text-slate-200">
                   <Package size={48} strokeWidth={1} />
@@ -7836,20 +8269,7 @@ const ManagerView: React.FC = () => {
                     exit={{ opacity: 0 }}
                     className="grid grid-cols-1 xl:grid-cols-2 gap-6"
                   >
-                        {(Array.from(new Map(orders
-                          .filter(o => 
-                            filterStatus === 'all' || 
-                            (filterStatus === 'cancelled' ? (o.status === 'cancelled' || o.status === 'rejected') : o.status === filterStatus)
-                          )
-                          .sort((a, b) => {
-                // Sort by status priority then by date
-                const priority: any = { pending: 0, preparing: 1, ready: 2, delivering: 3, en_route: 4, delivered: 5, rejected: 6, cancelled: 7 };
-                if (priority[a.status] !== priority[b.status]) {
-                  return priority[a.status] - priority[b.status];
-                }
-                return (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0);
-              })
-              .map(order => [order.id, order])).values()) as Order[]).map((order) => {
+                        {finalOrdersToRender.map((order) => {
               const uniqueOrderKey = `order-card-v2-${order.id}`;
           const orderColor = getOrderColor(order, currentTime, warningMinutes);
           const isExpired = orderColor.isExpired;
@@ -7968,7 +8388,7 @@ const ManagerView: React.FC = () => {
                               </p>
                             </div>
                             <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
-                              {order.createdAt?.toDate ? order.createdAt.toDate().toLocaleString() : new Date(order.createdAt).toLocaleString()}
+                              {safeFormatDate(order.createdAt)}
                             </p>
 
                             {/* Assigned Employees */}
@@ -8113,7 +8533,7 @@ const ManagerView: React.FC = () => {
                                        <span className="flex flex-col">
                                          <span className="text-[8px] font-black uppercase tracking-tighter opacity-60">Entrega TUPÃ Selecionada</span>
                                          <span className="text-[12px] font-black italic text-emerald-900">
-                                           {typeof order.tupaCategory === 'object' ? (order.tupaCategory as any)?.name : (order.tupaCategory || 'O cliente optou pela TUPÃ')}
+                                           {typeof order.tupaCategory === 'object' ? (order.tupaCategory as any)?.name : (order.tupaCategory || 'O cliente optou pela Xô Fome')}
                                          </span>
                                        </span>
                                      ) : 'Taxa de Entrega (Normal)'}
@@ -8576,7 +8996,7 @@ const ManagerView: React.FC = () => {
                                                   {isTupaDelivery && (
                                                     <div className="pt-3 border-t border-white/10 space-y-1 text-center">
                                                       <p className="text-[9px] font-bold text-white uppercase tracking-widest leading-tight">
-                                                        <span className="text-yellow-300">{displayCourierName || 'Motorista'}</span> da categoria <span className="text-yellow-300">{(typeof order.tupaCategory === 'object' ? (order.tupaCategory as any)?.name : (order.tupaCategory || 'Tupã'))}</span> a caminho
+                                                        <span className="text-yellow-300">{displayCourierName || 'Motorista'}</span> da categoria <span className="text-yellow-300">{(typeof order.tupaCategory === 'object' ? (order.tupaCategory as any)?.name : (order.tupaCategory || 'Xô Fome'))}</span> a caminho
                                                       </p>
                                                       <div className="bg-white/10 rounded-xl py-2 px-3">
                                                         <p className="text-[10px] font-black text-white uppercase tracking-widest">
@@ -8769,6 +9189,34 @@ const ManagerView: React.FC = () => {
                 )}
               </AnimatePresence>
             )}
+
+            {processedOrdersData.closed.length > 0 && (
+              <div className="flex flex-col items-center justify-center gap-3 py-6 bg-slate-50/50 rounded-[2.5rem] border-2 border-dashed border-slate-100 mt-6">
+                <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 font-bold">
+                  Pedidos finalizados: {processedOrdersData.closed.length} total ({Math.max(0, processedOrdersData.closed.length - closedOrdersLimit)} ocultados)
+                </span>
+                <div className="flex items-center gap-3">
+                  {processedOrdersData.closed.length > closedOrdersLimit && (
+                    <button
+                      onClick={() => setClosedOrdersLimit(prev => prev + 5)}
+                      className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-black uppercase tracking-widest text-[10px] rounded-2xl shadow-lg hover:shadow-blue-500/25 transition-all flex items-center gap-2 hover:scale-[1.02] active:scale-95"
+                    >
+                      <ChevronDown size={14} />
+                      <span>Ver mais 5 pedidos</span>
+                    </button>
+                  )}
+                  {closedOrdersLimit > 0 && (
+                    <button
+                      onClick={() => setClosedOrdersLimit(0)}
+                      className="px-6 py-3 bg-white hover:bg-slate-50 text-slate-600 font-black uppercase tracking-widest text-[10px] rounded-2xl border-2 border-slate-100 shadow-sm transition-all flex items-center gap-2 hover:scale-[1.02] active:scale-95"
+                    >
+                      <X size={14} className="text-slate-400" />
+                      <span>Ocultar todos</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
           </section>
         )}
 
@@ -8866,10 +9314,10 @@ const ManagerView: React.FC = () => {
                           <tr key={`split-pay-hist-${history.id}-${idx}`} className="hover:bg-slate-50/50 transition-colors">
                             <td className="p-6">
                               <p className="text-xs font-bold text-slate-700">
-                                {history.createdAt?.toDate ? history.createdAt.toDate().toLocaleDateString() : new Date(history.createdAt).toLocaleDateString()}
+                                {safeFormatDateOnly(history.createdAt)}
                               </p>
                               <p className="text-[9px] text-slate-400">
-                                {history.createdAt?.toDate ? history.createdAt.toDate().toLocaleTimeString() : new Date(history.createdAt).toLocaleTimeString()}
+                                {safeFormatTimeOnly(history.createdAt)}
                               </p>
                             </td>
                             <td className="p-6">
@@ -9467,6 +9915,7 @@ const ManagerView: React.FC = () => {
           <Chat 
             orderId={activeChatOrderId} 
             orderStatus={orders.find(o => o.id === activeChatOrderId)?.status || ''} 
+            isManagerView={true}
             onClose={() => setActiveChatOrderId(null)}
           />
         )}

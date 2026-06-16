@@ -49,6 +49,12 @@ interface UserProfile {
   cpf?: string;
   latitude?: number;
   longitude?: number;
+  lastLocation?: {
+    latitude: number;
+    longitude: number;
+    capturedAt: string;
+    method: string;
+  };
   subscriptionStatus?: 'active' | 'expired' | 'trial';
   subscriptionDueDate?: string;
   trialEndsAt?: string;
@@ -63,6 +69,7 @@ interface UserProfile {
 
 const ADMIN_EMAILS = [
   'xofometupa@gmail.com',
+  'tupamobilidade@gmail.com',
   'tupass@gmail.com',
   'entrega.rapida247@gmail.com',
   'foddcomida9@gmail.com',
@@ -169,6 +176,7 @@ interface GlobalSettings {
   appSupportPhone?: string;
   companySupportPhone?: string;
   citySupportNumbers?: Record<string, string>;
+  businessRegistrationPhone?: string;
 }
 
 interface AuthContextType {
@@ -184,7 +192,7 @@ interface AuthContextType {
   signOut: () => Promise<void>;
   updateStatus: (status: 'online' | 'offline') => Promise<void>;
   setRole: (role: UserProfile['role']) => Promise<void>;
-  updateProfileData: (data: Partial<Pick<UserProfile, 'displayName' | 'photoURL' | 'whatsapp' | 'address' | 'cpf' | 'referencePoint'>>) => Promise<void>;
+  updateProfileData: (data: Partial<Pick<UserProfile, 'displayName' | 'photoURL' | 'whatsapp' | 'address' | 'cpf' | 'referencePoint' | 'cityId' | 'city'>>) => Promise<void>;
   updateTheme: (theme: UserProfile['theme']) => Promise<void>;
   updateGlobalSettings: (settings: Partial<GlobalSettings>) => Promise<void>;
   activateSubscription: (userId: string) => Promise<void>;
@@ -227,6 +235,7 @@ interface AuthContextType {
   isAdmin: boolean;
   prefetchManagerData: (uid: string) => Promise<void>;
   prefetchAdminData: () => Promise<void>;
+  invalidateAndRebuildHomeData: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -305,7 +314,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const saved = localStorage.getItem('manager_data_cache');
     if (saved) {
       try {
-        return { ...JSON.parse(saved), isPreloaded: true };
+        const parsed = JSON.parse(saved);
+        const hasRestaurant = !!parsed.restaurant;
+        return { ...parsed, isPreloaded: hasRestaurant };
       } catch (e) {
         console.error('Error parsing cached manager data:', e);
       }
@@ -326,11 +337,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   });
 
-  const prefetchManagerData = useCallback(async (uid?: string, restaurantIdFromProfile?: string) => {
+  const saveManagerDataCache = useCallback((newData: any) => {
+    const activeUid = auth.currentUser?.uid || user?.uid || profile?.uid;
+    if (activeUid) {
+      localStorage.setItem('manager_data_cache', JSON.stringify({ ...newData, uid: activeUid }));
+    } else {
+      localStorage.setItem('manager_data_cache', JSON.stringify(newData));
+    }
+  }, [user, profile]);
+
+  const prefetchManagerData = useCallback(async (uid?: string, restaurantIdFromProfile?: string, force = false) => {
     const targetUid = uid || user?.uid;
-    if (!targetUid || managerData.isPreloaded) return;
+    if (!targetUid) return;
+
+    if (managerData.isPreloaded && !force && managerData.restaurant && (managerData.restaurant.ownerUid === targetUid || managerData.restaurant.id === restaurantIdFromProfile)) {
+      console.log('Skipping manager prefetch as data is already loaded for this user:', targetUid);
+      return;
+    }
     
-    console.log('Prefetching manager data for:', targetUid, 'ResID from profile:', restaurantIdFromProfile);
+    console.log('Prefetching manager data for:', targetUid, 'ResID from profile:', restaurantIdFromProfile, 'force:', force);
     
     try {
       // Get restaurant: prioritize direct link, fallback to ownership
@@ -382,14 +407,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             wallet: walletDoc ? { id: walletDoc.id, ...walletDoc.data() } as any : null,
             isPreloaded: true
           };
-          localStorage.setItem('manager_data_cache', JSON.stringify(newData));
+          saveManagerDataCache(newData);
+          return newData;
+        });
+      } else {
+        console.log('No restaurant found in DB for ownerUid / profile restaurantId:', targetUid);
+        // Ensure we clear the managerData's loaded restaurant if none exists,
+        // but set isPreloaded to true only when it matches targetUid, otherwise set it to false so registering view can show
+        setManagerData(prev => {
+          const newData = {
+            ...prev,
+            restaurant: null,
+            foodItems: [],
+            orders: [],
+            wallet: null,
+            isPreloaded: true
+          };
+          saveManagerDataCache(newData);
           return newData;
         });
       }
     } catch (error) {
       console.error('Error prefetching manager data:', error);
     }
-  }, [managerData.isPreloaded, user?.uid]);
+  }, [managerData.isPreloaded, managerData.restaurant, saveManagerDataCache, user?.uid]);
 
   const prefetchAdminData = useCallback(async () => {
     if (adminData.isPreloaded) return;
@@ -397,11 +438,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     console.log('Prefetching admin data');
     
     try {
-      const [restaurantsSnap, usersSnap, paymentsSnap, branchesSnap] = await Promise.all([
+      const [restaurantsSnap, usersSnap, paymentsSnap, branchesSnap, citiesSnap, bannersSnap, categoriesSnap] = await Promise.all([
         getDocs(query(collection(db, 'restaurants'), limit(50))),
         getDocs(query(collection(db, 'users'), limit(50))),
         getDocs(query(collection(db, 'payments'), orderBy('createdAt', 'desc'), limit(50))),
-        getDocs(query(collection(db, 'branches'), limit(50)))
+        getDocs(query(collection(db, 'branches'), limit(50))),
+        getDocs(query(collection(db, 'cities'), limit(50))),
+        getDocs(query(collection(db, 'promotional_banners'), limit(20))),
+        getDocs(query(collection(db, 'categories'), limit(50)))
       ]);
 
       setAdminData(prev => {
@@ -411,6 +455,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           users: usersSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as any)),
           payments: paymentsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as any)),
           branches: branchesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as any)),
+          cities: citiesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as any)),
+          banners: bannersSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as any)),
+          categories: categoriesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as any)),
           isPreloaded: true
         };
         localStorage.setItem('admin_data_cache', JSON.stringify(newData));
@@ -421,55 +468,245 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [adminData.isPreloaded]);
 
-  // Load common data for all users efficiently
+  // Call this whenever an admin or manager modifies restaurants, categories, banners, or global settings
+  const invalidateAndRebuildHomeData = useCallback(async () => {
+    try {
+      console.log('[SWR] Invalidating and rebuilding home_data in Firestore for all users...');
+      const [bannersSnap, categoriesSnap, citiesSnap, restaurantsSnap, foodItemsSnap, settingsSnap] = await Promise.all([
+        getDocs(query(collection(db, 'promotional_banners'), limit(20))),
+        getDocs(query(collection(db, 'categories'), limit(50))),
+        getDocs(query(collection(db, 'cities'), limit(50))),
+        getDocs(query(collection(db, 'restaurants'), limit(150))),
+        getDocs(query(collection(db, 'food_items'), where('available', '==', true), limit(150))),
+        getDoc(doc(db, 'settings', 'global'))
+      ]);
+
+      const rawBanners = bannersSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const rawCategories = categoriesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const rawCities = citiesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const rawRestaurants = restaurantsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const rawFoodItems = foodItemsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const rawSettings = settingsSnap.exists() ? settingsSnap.data() : {};
+
+      const finalData = {
+        banners: rawBanners,
+        categories: rawCategories,
+        cities: rawCities,
+        restaurants: rawRestaurants,
+        foodItems: rawFoodItems,
+        configuracoes: rawSettings,
+        updatedAt: new Date().toISOString()
+      };
+
+      const homeDataDocRef = doc(db, 'settings', 'home_data');
+      await setDoc(homeDataDocRef, finalData);
+      console.log('[SWR] Successfully rebuilt home_data document.');
+      
+      // Update our own cache
+      const formattedCommon = {
+        restaurants: rawRestaurants,
+        banners: rawBanners,
+        categories: rawCategories,
+        cities: rawCities,
+        foodItems: rawFoodItems,
+        isLoaded: true
+      };
+      setCommonData(formattedCommon);
+      localStorage.setItem('common_data_cache', JSON.stringify(formattedCommon));
+
+      // Also keep adminData in sync so AdminView states do not reset on cache update
+      setAdminData(prev => ({
+        ...prev,
+        categories: rawCategories,
+        banners: rawBanners,
+        cities: rawCities,
+        restaurants: rawRestaurants
+      }));
+    } catch (e) {
+      console.error('[SWR] Error rebuilding home_data:', e);
+    }
+  }, []);
+
+  // Load common data for all users efficiently using a Stale-While-Revalidate (SWR) single-request caching pattern
   useEffect(() => {
-    console.log('Loading common data...');
-    
+    console.log('[AuthContext] Initializing highly-optimized SWR common data sync...');
+
     const fetchCommonData = async () => {
       try {
-        const [restaurantsSnap, bannersSnap, categoriesSnap, citiesSnap, foodItemsSnap] = await Promise.all([
-          getDocs(query(collection(db, 'restaurants'), limit(100))),
-          getDocs(query(collection(db, 'promotional_banners'), limit(20))),
-          getDocs(query(collection(db, 'categories'), limit(50))),
-          getDocs(query(collection(db, 'cities'), limit(50))),
-          getDocs(query(collection(db, 'food_items'), limit(5000)))
-        ]);
+        // --- 1. SWR CHECK: Load instantly from local cache if we already have it in localStorage
+        const cached = localStorage.getItem('common_data_cache');
+        if (cached) {
+          try {
+            const parsed = JSON.parse(cached);
+            setCommonData({
+              restaurants: parsed.restaurants || [],
+              banners: parsed.banners || [],
+              categories: parsed.categories || [],
+              cities: parsed.cities || [],
+              foodItems: parsed.foodItems || [],
+              isLoaded: true
+            });
+            setAdminData(prev => ({
+              ...prev,
+              restaurants: parsed.restaurants || [],
+              banners: parsed.banners || [],
+              categories: parsed.categories || [],
+              cities: parsed.cities || []
+            }));
+            if (parsed.configuracoes) {
+              setGlobalSettings(parsed.configuracoes);
+            }
+            console.log('[SWR] Loaded instantly from absolute local cache. UI opened in 0ms.');
+          } catch (e) {
+            console.error('[SWR] Error parsing local storage common_data_cache:', e);
+          }
+        }
 
-        const restaurants = restaurantsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        const banners = bannersSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        const categories = categoriesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        const cities = citiesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        const foodItems = foodItemsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        // --- 2. SINGLE FIREBASE DOCUMENT READ REQUEST (Targeting highly scalable consolidations with real-time onSnapshot sync!)
+        const homeDataDocRef = doc(db, 'settings', 'home_data');
+        const unsubHome = onSnapshot(homeDataDocRef, async (homeDataSnap) => {
+          try {
+            let finalData: any = null;
 
-        setCommonData({
-          restaurants,
-          banners,
-          categories,
-          cities,
-          foodItems,
-          isLoaded: true
+            if (homeDataSnap.exists()) {
+              console.log('[SWR] Successfully obtained consolidated home_data payload from Firestore in exactly ONE read!');
+              finalData = homeDataSnap.data();
+
+              // --- 2.5 LIVE PRODUCT AVAILABILITY & RESTAURANT RE-CHECK (Requested: verify live product availability on enters/reloads)
+              // This ensures the client always sees actual, up-to-date available food_items and restaurant status upon initial load or reload.
+              try {
+                console.log('[SWR] Fetching live product availability and active restaurants directly from Firestore...');
+                const [freshFoodItemsSnap, freshRestaurantsSnap] = await Promise.all([
+                  getDocs(query(collection(db, 'food_items'), where('available', '==', true), limit(150))),
+                  getDocs(query(collection(db, 'restaurants'), limit(150)))
+                ]);
+
+                const freshFoodItems = freshFoodItemsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+                const freshRestaurants = freshRestaurantsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+                if (freshFoodItems.length > 0) {
+                  finalData.foodItems = freshFoodItems;
+                }
+                if (freshRestaurants.length > 0) {
+                  finalData.restaurants = freshRestaurants;
+                }
+                console.log('[SWR] Successfully obtained fresh, live product and restaurant availability data.');
+              } catch (checkErr) {
+                console.error('[SWR] Non-blocking error fetching live product availability check, falling back to cached payload:', checkErr);
+              }
+            } else {
+              // --- 3. FALLBACK/COMPILE STEP: If consolidated doc does not exist yet (first-run or cache expired)
+              console.warn('[SWR] Consolidated settings/home_data does not exist. Compiling from multiple collections in parallel...');
+              
+              const [bannersSnap, categoriesSnap, citiesSnap, restaurantsSnap, foodItemsSnap, settingsSnap] = await Promise.all([
+                getDocs(query(collection(db, 'promotional_banners'), limit(20))),
+                getDocs(query(collection(db, 'categories'), limit(50))),
+                getDocs(query(collection(db, 'cities'), limit(50))),
+                getDocs(query(collection(db, 'restaurants'), limit(150))),
+                getDocs(query(collection(db, 'food_items'), where('available', '==', true), limit(150))),
+                getDoc(doc(db, 'settings', 'global'))
+              ]);
+
+              const rawBanners = bannersSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+              const rawCategories = categoriesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+              const rawCities = citiesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+              const rawRestaurants = restaurantsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+              const rawFoodItems = foodItemsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+              const rawSettings = settingsSnap.exists() ? settingsSnap.data() : {};
+
+              finalData = {
+                banners: rawBanners,
+                categories: rawCategories,
+                cities: rawCities,
+                restaurants: rawRestaurants,
+                foodItems: rawFoodItems,
+                configuracoes: rawSettings,
+                updatedAt: new Date().toISOString()
+              };
+
+              // --- 4. AUTO-HEAL: Automatically write back the compiled object so future users only use 1 read
+              try {
+                await setDoc(homeDataDocRef, finalData);
+                console.log('[SWR] Auto-healed and successfully uploaded consolidated home_data back to Firebase for future clients.');
+              } catch (writeErr) {
+                console.log('[SWR] Could not auto-heal home_data in Firestore (this is normal for non-admin users due to security rules). Fallback to client cache is sufficient.');
+              }
+            }
+
+            // --- 5. ENRICH/UPDATE GLOBAL STATES & LOCAL CACHING
+            if (finalData) {
+              const formattedCommon = {
+                restaurants: finalData.restaurants || [],
+                banners: finalData.banners || [],
+                categories: finalData.categories || [],
+                cities: finalData.cities || [],
+                foodItems: finalData.foodItems || [],
+                isLoaded: true
+              };
+
+              setCommonData(formattedCommon);
+              setAdminData(prev => ({
+                ...prev,
+                restaurants: finalData.restaurants || [],
+                banners: finalData.banners || [],
+                categories: finalData.categories || [],
+                cities: finalData.cities || []
+              }));
+
+              if (finalData.configuracoes) {
+                setGlobalSettings(finalData.configuracoes);
+                localStorage.setItem('global_settings_cache', JSON.stringify(finalData.configuracoes));
+              }
+
+              localStorage.setItem('common_data_cache', JSON.stringify(formattedCommon));
+              console.log('[SWR Real-time Update] Global states and local storage common_data_cache successfully synchronized.');
+            }
+          } catch (snapshotErr) {
+            console.error('[SWR Real-time Snapshot Process Error]:', snapshotErr);
+          }
+        }, (error) => {
+          console.error('[SWR Real-time Listen Error for home_data]:', error);
+          setCommonData(prev => ({ ...prev, isLoaded: true }));
         });
 
-        // Update admin data too
-        setAdminData(prev => ({ 
-          ...prev, 
-          restaurants, 
-          cities, 
-          categories, 
-          banners 
-        }));
+        // Real-time categories direct subscription unifies client/admin sources of truth
+        const unsubCategories = onSnapshot(collection(db, 'categories'), (categoriesSnap) => {
+          const rawCategories = categoriesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+          console.log('[AuthContext] Categories synchronized in Real-time from Firestore:', rawCategories.length);
+          setCommonData(prev => ({
+            ...prev,
+            categories: rawCategories
+          }));
+          setAdminData(prev => ({
+            ...prev,
+            categories: rawCategories
+          }));
+        }, (error) => {
+          console.error('[AuthContext] error listening to categories library:', error);
+        });
 
-        localStorage.setItem('common_data_cache', JSON.stringify({
-          restaurants, banners, categories, cities, isLoaded: true
-        }));
+        (window as any)._unsubHomeData = unsubHome;
+        (window as any)._unsubCategories = unsubCategories;
+
       } catch (err) {
-        console.error('Error fetching common data:', err);
-        // Fallback to cache if error, or just mark as loaded
+        console.error('[SWR] Error during scalable loading sequence:', err);
+        // Ensure app still considers loading completed if has cache
         setCommonData(prev => ({ ...prev, isLoaded: true }));
       }
     };
 
     fetchCommonData();
+    return () => {
+      const g = (window as any);
+      if (g._unsubHomeData) {
+        g._unsubHomeData();
+        g._unsubHomeData = undefined;
+      }
+      if (g._unsubCategories) {
+        g._unsubCategories();
+        g._unsubCategories = undefined;
+      }
+    };
   }, []);
 
   const refreshWallet = useCallback(async () => {
@@ -635,8 +872,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Load admin-only data
   useEffect(() => {
-      const isAdmin = (user && (ADMIN_EMAILS.includes((user.email || '').toLowerCase()) || ADMIN_UIDS.includes(user.uid!))) || profile?.role === 'admin';
-      if (!isAdmin) return;
+      if (!user || isGuest) return;
+      
+      const isGlobalAdmin = ADMIN_EMAILS.includes((user.email || '').toLowerCase()) || ADMIN_UIDS.includes(user.uid!);
+      const isProfileAdmin = profile?.role === 'admin';
+      
+      if (!isGlobalAdmin && !isProfileAdmin) return;
 
       console.log('Pre-loading admin-only data...', { email: user?.email, role: profile?.role });
       
@@ -920,6 +1161,49 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (currentUser) {
         setIsGuest(false);
         
+        // Match user profile cache to currentUser.uid
+        const savedProfile = localStorage.getItem('user_profile_cache');
+        if (savedProfile) {
+          try {
+            const parsedProfile = JSON.parse(savedProfile);
+            if (parsedProfile.uid !== currentUser.uid) {
+              console.log('Clearing mismatched user profile cache');
+              localStorage.removeItem('user_profile_cache');
+              setProfile(null);
+            }
+          } catch (e) {
+            console.error('Error parsing cached profile UID check:', e);
+          }
+        }
+
+        // Match manager data cache to currentUser.uid
+        const savedManagerCache = localStorage.getItem('manager_data_cache');
+        if (savedManagerCache) {
+          try {
+            const parsedManager = JSON.parse(savedManagerCache);
+            if (parsedManager.uid !== currentUser.uid) {
+              console.log('Clearing mismatched manager data cache');
+              localStorage.removeItem('manager_data_cache');
+              setManagerData({
+                restaurant: null,
+                popups: [],
+                banners: [],
+                foodItems: [],
+                orders: [],
+                reviews: [],
+                rides: [],
+                wallet: null,
+                transactions: [],
+                splitPayHistory: [],
+                printers: [],
+                isPreloaded: false
+              });
+            }
+          } catch (e) {
+            console.error('Error parsing cached manager data UID check:', e);
+          }
+        }
+        
         const userDocRef = doc(db, 'users', currentUser.uid);
         unsubscribeProfile = onSnapshot(userDocRef, (docSnap) => {
           if (docSnap.exists()) {
@@ -939,6 +1223,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               referencePoint: data.referencePoint,
               restaurantId: data.restaurantId,
               cpf: data.cpf,
+              lastLocation: data.lastLocation,
               subscriptionStatus: data.subscriptionStatus,
               subscriptionDueDate: data.subscriptionDueDate,
               trialEndsAt: data.trialEndsAt,
@@ -1040,7 +1325,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             ...prev,
             restaurant: { id: snap.id, ...snap.data() } as any
           };
-          localStorage.setItem('manager_data_cache', JSON.stringify(newData));
+          saveManagerDataCache(newData);
           return newData;
         });
       }
@@ -1059,7 +1344,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           ...prev,
           orders: snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as any))
         };
-        localStorage.setItem('manager_data_cache', JSON.stringify(newData));
+        saveManagerDataCache(newData);
         return newData;
       });
     }, (err) => handleFirestoreError(err, OperationType.GET, 'orders')));
@@ -1076,7 +1361,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           ...prev,
           foodItems: snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as any))
         };
-        localStorage.setItem('manager_data_cache', JSON.stringify(newData));
+        saveManagerDataCache(newData);
         return newData;
       });
     }, (err) => handleFirestoreError(err, OperationType.GET, 'food_items')));
@@ -1094,7 +1379,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           ...prev,
           transactions: snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as any))
         };
-        localStorage.setItem('manager_data_cache', JSON.stringify(newData));
+        saveManagerDataCache(newData);
         return newData;
       });
     }, (err) => handleFirestoreError(err, OperationType.GET, 'wallet_transactions')));
@@ -1112,7 +1397,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           ...prev,
           reviews: snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as any))
         };
-        localStorage.setItem('manager_data_cache', JSON.stringify(newData));
+        saveManagerDataCache(newData);
         return newData;
       });
     }, (err) => handleFirestoreError(err, OperationType.GET, 'reviews')));
@@ -1130,7 +1415,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           ...prev,
           rides: snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as any))
         };
-        localStorage.setItem('manager_data_cache', JSON.stringify(newData));
+        saveManagerDataCache(newData);
         return newData;
       });
     }, (err) => {
@@ -1151,7 +1436,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           ...prev,
           printers: snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as any))
         };
-        localStorage.setItem('manager_data_cache', JSON.stringify(newData));
+        saveManagerDataCache(newData);
         return newData;
       });
     }, (err) => handleFirestoreError(err, OperationType.GET, 'printers')));
@@ -1319,7 +1604,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         
         // If manager, prefetch their specific data immediately
         if (userProfile.role === 'manager') {
-          await prefetchManagerData(currentUser.uid, userProfile.restaurantId);
+          await prefetchManagerData(currentUser.uid, userProfile.restaurantId, true);
         }
       }
     } catch (error: any) {
@@ -1351,9 +1636,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     await firebaseSignOut(auth);
     setIsGuest(false);
     setProfile(null);
-    localStorage.removeItem('user_profile_cache');
-    localStorage.removeItem('manager_data_cache');
-    localStorage.removeItem('admin_data_cache');
+    setAdminData({
+      restaurants: [],
+      users: [],
+      cities: [],
+      orders: [],
+      wallets: [],
+      banners: [],
+      categories: [],
+      payments: [],
+      branches: [],
+      isPreloaded: false
+    });
+    setManagerData({
+      restaurant: null,
+      popups: [],
+      banners: [],
+      foodItems: [],
+      orders: [],
+      reviews: [],
+      rides: [],
+      wallet: null,
+      transactions: [],
+      splitPayHistory: [],
+      printers: [],
+      isPreloaded: false
+    });
+    localStorage.clear(); // Clear all caches including theme etc.
   };
 
   const updateStatus = async (status: 'online' | 'offline') => {
@@ -1389,7 +1698,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const updateProfileData = async (data: Partial<Pick<UserProfile, 'displayName' | 'photoURL' | 'whatsapp' | 'address' | 'cpf' | 'referencePoint'>>) => {
+  const updateProfileData = async (data: Partial<Pick<UserProfile, 'displayName' | 'photoURL' | 'whatsapp' | 'address' | 'cpf' | 'referencePoint' | 'cityId' | 'city'>>) => {
     if (!user) return false;
     try {
       const userDocRef = doc(db, 'users', user.uid);
@@ -1405,6 +1714,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (data.address !== undefined) sanitizedData.address = data.address || '';
       if (data.cpf !== undefined) sanitizedData.cpf = data.cpf || '';
       if (data.referencePoint !== undefined) sanitizedData.referencePoint = data.referencePoint || '';
+      if (data.cityId !== undefined) sanitizedData.cityId = data.cityId || '';
+      if (data.city !== undefined) sanitizedData.city = data.city || '';
 
       await setDoc(userDocRef, sanitizedData, { merge: true });
 
@@ -1514,6 +1825,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       commonData,
       prefetchManagerData,
       prefetchAdminData,
+      invalidateAndRebuildHomeData,
       isAdmin: !!(user && (ADMIN_EMAILS.includes((user.email || '').toLowerCase()) || ADMIN_UIDS.includes(user.uid!) || profile?.role === 'admin'))
     }}>
       {children}

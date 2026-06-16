@@ -8,7 +8,7 @@ export async function initGlobalSettings() {
     if (!docSnap.exists()) {
       console.log('Initializing global settings...');
       await setDoc(settingsDocRef, {
-        appName: 'iFood Clara',
+        appName: 'Xô Fome',
         monthlyFee: 50,
         minWalletBalance: 5,
         minRechargeAmount: 20,
@@ -36,28 +36,42 @@ export async function initGlobalSettings() {
       console.log('Global settings initialized.');
     }
 
-    // Initialize categories if empty
+    // Ensure standard categories exist (Bebidas, Açaís, Padaria, Hambúrguer, Pizza)
     const categoriesCol = collection(db, 'categories');
     const categoriesSnap = await getDocs(categoriesCol);
-    if (categoriesSnap.empty) {
-      console.log('Initializing categories...');
-      const initialCategories = [
-        { name: 'Lanches', iconName: 'Utensils', active: true, order: 1 },
-        { name: 'Pizza', iconName: 'Pizza', active: true, order: 2 },
-        { name: 'Bebidas', iconName: 'CupSoda', active: true, order: 3 },
-        { name: 'Sobremesas', iconName: 'IceCream', active: true, order: 4 },
-        { name: 'Açaí & Sorvetes', iconName: 'Zap', active: true, order: 5 }
-      ];
-      for (const cat of initialCategories) {
+    
+    const requiredCategories = [
+      { name: 'Pizza', iconName: 'Pizza' },
+      { name: 'Bebidas', iconName: 'CupSoda' },
+      { name: 'Açaís', iconName: 'Zap' },
+      { name: 'Padaria', iconName: 'Store' },
+      { name: 'Hambúrguer', iconName: 'Utensils' }
+    ];
+
+    const existingNames = categoriesSnap.docs.map(doc => {
+      const data = doc.data();
+      return (data.name || '').trim().toLowerCase();
+    });
+
+    let orderCounter = categoriesSnap.size + 1;
+
+    for (const reqCat of requiredCategories) {
+      if (!existingNames.includes(reqCat.name.toLowerCase())) {
+        console.log(`Adding missing category: ${reqCat.name}`);
         const catRef = doc(collection(db, 'categories'));
         await setDoc(catRef, {
-          ...cat,
+          name: reqCat.name,
+          iconName: reqCat.iconName,
+          active: true,
+          status: 'active',
+          order: orderCounter++,
+          imageUrl: '',
           id: catRef.id,
           _systemKey: 'backend_service_key_2024_tupa'
         });
       }
-      console.log('Categories initialized.');
     }
+    console.log('Ensure standard categories logic completed successfully.');
 
     // Initialize business categories if empty
     const busCatsCol = collection(db, 'business_categories');

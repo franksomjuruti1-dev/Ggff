@@ -115,6 +115,16 @@ const adminAuth = () => {
  * This ensures the server-side logic always bypasses rules while maintaining a consistent API.
  */
 const createShimDb = (baseDb: any) => {
+  const isPermissionError = (err: any) => {
+    if (!err) return false;
+    const msg = (err.message || '').toLowerCase();
+    return msg.includes('permission_denied') || 
+           msg.includes('permission') || 
+           msg.includes('insufficient') || 
+           err.code === 7 || 
+           err.status === 7;
+  };
+
   const translateData = (data: any) => {
     if (!data || typeof data !== 'object') return data;
     const newData = Array.isArray(data) ? [...data] : { ...data };
@@ -147,7 +157,7 @@ const createShimDb = (baseDb: any) => {
                 const s = await docRef.get();
                 return { exists: s.exists, data: () => s.data(), id: s.id };
               } catch (e: any) {
-                if (e.message?.includes('PERMISSION_DENIED') || e.message?.includes('Insufficient permissions')) {
+                if (isPermissionError(e)) {
                   const { getDoc, doc } = await import("firebase/firestore");
                   const s = await getDoc(doc(clientDb, name, id || docRef.id));
                   return { exists: s.exists(), data: () => s.data(), id: s.id };
@@ -158,7 +168,7 @@ const createShimDb = (baseDb: any) => {
             set: async (data: any, options?: any) => {
               try { return await docRef.set(data, options); }
               catch (e: any) {
-                if (e.message?.includes('PERMISSION_DENIED') || e.message?.includes('Insufficient permissions')) {
+                if (isPermissionError(e)) {
                   const { setDoc, doc } = await import("firebase/firestore");
                   return await setDoc(doc(clientDb, name, id || docRef.id), translateData(data), options);
                 }
@@ -168,7 +178,7 @@ const createShimDb = (baseDb: any) => {
             update: async (data: any) => {
               try { return await docRef.update(data); }
               catch (e: any) {
-                if (e.message?.includes('PERMISSION_DENIED') || e.message?.includes('Insufficient permissions')) {
+                if (isPermissionError(e)) {
                   const { updateDoc, doc } = await import("firebase/firestore");
                   return await updateDoc(doc(clientDb, name, id || docRef.id), translateData(data));
                 }
@@ -178,7 +188,7 @@ const createShimDb = (baseDb: any) => {
             delete: async () => {
               try { return await docRef.delete(); }
               catch (e: any) {
-                if (e.message?.includes('PERMISSION_DENIED') || e.message?.includes('Insufficient permissions')) {
+                if (isPermissionError(e)) {
                   const { deleteDoc, doc } = await import("firebase/firestore");
                   return await deleteDoc(doc(clientDb, name, id || docRef.id));
                 }
@@ -187,7 +197,7 @@ const createShimDb = (baseDb: any) => {
             },
             onSnapshot: (onNext: any, onError: any) => {
               return docRef.onSnapshot(onNext, async (err: any) => {
-                if (err.message?.includes('PERMISSION_DENIED') || err.message?.includes('Insufficient permissions')) {
+                if (isPermissionError(err)) {
                   try {
                     const { onSnapshot: clientOnSnapshot, doc: clientDocRef } = await import("firebase/firestore");
                     return clientOnSnapshot(clientDocRef(clientDb, name, id || docRef.id), (s: any) => onNext({ exists: s.exists(), data: () => s.data(), id: s.id }), onError);
@@ -205,7 +215,7 @@ const createShimDb = (baseDb: any) => {
         add: async (data: any) => {
           try { const r = await ref.add(data); return { id: r.id }; }
           catch (e: any) {
-            if (e.message?.includes('PERMISSION_DENIED') || e.message?.includes('Insufficient permissions')) {
+            if (isPermissionError(e)) {
               const { addDoc, collection } = await import("firebase/firestore");
               const r = await addDoc(collection(clientDb, name), translateData(data));
               return { id: r.id };
@@ -226,7 +236,7 @@ const createShimDb = (baseDb: any) => {
               docChanges: () => s.docChanges().map((c: any) => ({ type: c.type, doc: { id: c.doc.id, data: () => c.doc.data() } }))
             };
           } catch (e: any) {
-            if (e.message?.includes('PERMISSION_DENIED') || e.message?.includes('Insufficient permissions')) {
+            if (isPermissionError(e)) {
               try {
                 const { getDocs, collection, query, where, orderBy, limit } = await import("firebase/firestore");
                 let cRef: any = collection(clientDb, name);
@@ -257,7 +267,7 @@ const createShimDb = (baseDb: any) => {
                docChanges: () => snapshot.docChanges().map((c: any) => ({ type: c.type, doc: { id: c.doc.id, data: () => c.doc.data() } }))
              });
           }, async (err: any) => {
-            if (err.message?.includes('PERMISSION_DENIED') || err.message?.includes('Insufficient permissions')) {
+            if (isPermissionError(err)) {
               try {
                 const { onSnapshot: cOnSnapshot, collection, query, where, orderBy, limit } = await import("firebase/firestore");
                 let cRef: any = collection(clientDb, name);
@@ -452,6 +462,13 @@ async function startBackgroundServices() {
   } catch (e) {
     console.error("[ActivityMonitor] Start error:", e);
   }
+
+  // 5. Data Integrity Monitor
+  try {
+    startDataIntegrityMonitor().catch(e => console.error("[IntegrityMonitor] Runtime error:", e));
+  } catch (e) {
+    console.error("[IntegrityMonitor] Start error:", e);
+  }
 }
 
 // Order Splitter Logic (Bypassing Rules using Admin SDK)
@@ -470,15 +487,9 @@ async function startOrderSplitter() {
         unsubscribe = null;
       }
       
-      console.log("[OrderSplitter] Setting up direct Admin SDK listener on 'orders'...");
+      console.log("[OrderSplitter] Setting up direct listener on 'orders' using Shim DB...");
       
-      // Use adminDb directly for highest privilege
-      if (!adminDb) {
-        console.warn("[OrderSplitter] adminDb not ready, waiting...");
-        await new Promise(r => setTimeout(r, 2000));
-      }
-      
-      const q = adminDb.collection("orders").where("status", "==", "pending");
+      const q = db.collection("orders").where("status", "==", "pending");
 
       unsubscribe = q.onSnapshot(async (snapshot: any) => {
         try {
@@ -513,7 +524,7 @@ async function startOrderSplitter() {
 
 // Process a single order
   async function processOrder(order: any) {
-    const firestore = adminDb || db;
+    const firestore = db;
     if (!firestore) {
        console.error("[OrderSplitter] Database not initialized yet");
        return;
@@ -612,7 +623,7 @@ async function startOrderSplitter() {
       try {
         // Only run polling if the listener is inactive or on manual trigger
         // This dramatically reduces read operations
-        const firestorePoll = adminDb || db;
+        const firestorePoll = db;
         const snapshot = await firestorePoll.collection("orders")
           .where("status", "==", "pending")
           .limit(10)
@@ -1237,8 +1248,7 @@ async function startServer() {
   });
 
   // Machine API (Gaudium) - Mode 1: Multicategory Estimates
-  // Machine API (Gaudium) - Mode 1: Multicategory Estimates
-  app.get("/api/machine/estimativas", async (req, res) => {
+  app.get(["/api/machine/estimativas", "/api/machine/estimar-multicategorias"], async (req, res) => {
     const { cityId, lat_partida, lng_partida, lat_desejado, lng_desejado } = req.query;
 
     if (!cityId || !lat_desejado || !lng_desejado) {
@@ -1369,7 +1379,7 @@ async function startServer() {
   });
 
   // Machine API (Gaudium) - Mode 2: Simple Categories List
-  app.get("/api/machine/categorias", async (req, res) => {
+  app.get(["/api/machine/categorias", "/api/machine/list-categorias"], async (req, res) => {
     const { cityId, cityName, apiUrl: qApiUrl, apiKey: qApiKey, authEmail: qAuthEmail, authPassword: qAuthPassword } = req.query;
 
     let apiUrl = qApiUrl as string;
@@ -1996,6 +2006,15 @@ async function startServer() {
         }
       }
 
+      // 1.1 Check if restaurant has unlimited credit (skip deduction)
+      if (restaurantId) {
+        const resSnap = await currentDb.collection("restaurants").doc(restaurantId).get();
+        if (resSnap.exists && resSnap.data()?.unlimitedCredit === true) {
+          console.log(`[ManagerAPI] Skipping deduction for ${restaurantName} (Unlimited Credit Active)`);
+          return res.json({ success: true, message: "Unlimited credit active, no deduction needed" });
+        }
+      }
+
       const currentBalance = parseFloat(walletSnap.data()?.balance?.toString() || "0");
       console.log(`[ManagerAPI] Deducting R$ ${numericAmount} from balance R$ ${currentBalance}`);
       
@@ -2270,6 +2289,78 @@ async function startActivityMonitor() {
  * Monitora carteiras dos gestores e atualiza o status dos restaurantes
  * QUOTA-EFFICIENT VERSION: Uses polling instead of expensive snapshots on collections.
  */
+// Background Data Integrity Monitor - Cleans up orphan food items
+async function startDataIntegrityMonitor() {
+  console.log(`[IntegrityMonitor] Initializing Data Integrity Service...`);
+  
+  const performCleanup = async () => {
+    try {
+      console.log(`[IntegrityMonitor] Starting integrity check cycle...`);
+      
+      // 1. Get all valid restaurant IDs
+      const restaurantsSnap = await db.collection("restaurants").get();
+      const validRestaurantIds = new Set(restaurantsSnap.docs.map(doc => doc.id));
+      
+      // 2. Fetch all food items (limit to 500 per cycle to avoid memory/quota issues)
+      const foodItemsSnap = await db.collection("food_items").limit(500).get();
+      
+      let deletedCount = 0;
+      const deletePromises = [];
+
+      for (const itemDoc of foodItemsSnap.docs) {
+        const itemData = itemDoc.data();
+        const restaurantId = itemData.restaurantId;
+
+        // 3. If restaurantId is missing or doesn't exist in restaurants collection
+        if (!restaurantId || !validRestaurantIds.has(restaurantId)) {
+          console.warn(`[IntegrityMonitor] Found orphan product: ${itemData.name} (ID: ${itemDoc.id}) linked to missing restaurant: ${restaurantId}`);
+          deletePromises.push(db.collection("food_items").doc(itemDoc.id).delete());
+          deletedCount++;
+        }
+      }
+
+      // 3. Update reviews (limit to 500 per cycle)
+      const reviewsSnap = await db.collection("reviews").limit(500).get();
+      let reviewsDeleted = 0;
+      const reviewDeletePromises = [];
+
+      for (const reviewDoc of reviewsSnap.docs) {
+        const reviewData = reviewDoc.data();
+        const restaurantId = reviewData.restaurantId;
+
+        if (!restaurantId || !validRestaurantIds.has(restaurantId)) {
+          console.warn(`[IntegrityMonitor] Found orphan review: (ID: ${reviewDoc.id}) linked to missing restaurant: ${restaurantId}`);
+          reviewDeletePromises.push(db.collection("reviews").doc(reviewDoc.id).delete());
+          reviewsDeleted++;
+        }
+      }
+
+      if (reviewDeletePromises.length > 0) {
+        await Promise.all(reviewDeletePromises);
+        console.log(`[IntegrityMonitor] Review cleanup complete: Removed ${reviewsDeleted} orphan reviews.`);
+      }
+
+      if (deletePromises.length > 0 || reviewDeletePromises.length > 0) {
+        console.log(`[IntegrityMonitor] Global cleanup complete.`);
+      } else {
+        console.log(`[IntegrityMonitor] Integrity check complete: 0 orphan records found.`);
+      }
+
+    } catch (err: any) {
+      console.error("[IntegrityMonitor] Check Error:", err.message);
+    }
+    return 1800000; // Run every 30 minutes
+  };
+
+  const runIntegrityCheck = async () => {
+    const nextWait = await performCleanup();
+    setTimeout(runIntegrityCheck, nextWait);
+  };
+
+  // Run first check after 30 seconds to let system warm up
+  setTimeout(runIntegrityCheck, 30000);
+}
+
 async function startWalletMonitor() {
   console.log(`[WalletMonitor] Iniciando monitor de carteiras (Bypass Mode)...`);
 
@@ -2279,7 +2370,7 @@ async function startWalletMonitor() {
     try {
       console.log(`[WalletMonitor] Rodando ciclo de sincronização...`);
       
-      const firestore = adminDb || db; // Prefer Admin SDK directly
+      const firestore = db;
       
       // 1. Get min balance from settings
       const settingsDoc = await firestore.collection("settings").doc("global").get();
@@ -2494,9 +2585,28 @@ async function startRideMonitor() {
                        updateOrder.status = newStatus === 'completed' ? 'delivered' : 'cancelled';
                     } else if (['accepted', 'pending_acceptance', 'en_route'].includes(newStatus)) {
                        updateOrder.status = 'delivering';
-                       if (updateData.courierName) {
-                           updateOrder.courierName = updateData.courierName;
+                       const courierName = updateData.courierName || ride.courierName;
+                       if (courierName) {
+                           updateOrder.courierName = courierName;
                            updateOrder.courierAssigned = true;
+                           
+                           const courierPhoto = updateData.courierPhoto || ride.courierPhoto || '';
+                           const courierVehicle = updateData.courierVehicle || ride.courierVehicle || '';
+                           const courierPlate = updateData.courierPlate || ride.courierPlate || '';
+                           const courierWhatsapp = updateData.courierWhatsapp || ride.courierWhatsapp || '';
+                           
+                           updateOrder.courierPhoto = courierPhoto;
+                           updateOrder.courierVehicle = courierVehicle;
+                           updateOrder.courierPlate = courierPlate;
+                           updateOrder.courierWhatsapp = courierWhatsapp;
+                           
+                           updateOrder.courierInfo = {
+                               name: courierName,
+                               phone: courierWhatsapp,
+                               vehicle: courierVehicle,
+                               plate: courierPlate,
+                               photo: courierPhoto
+                           };
                        }
                     }
                     await orderRef.update(updateOrder);
@@ -2533,7 +2643,7 @@ async function runInitialSeeds() {
     if (!settingsSnap.exists) {
         console.log('[Init] Initializing global settings...');
         await settingsRef.set({
-            appName: 'iFood Clara',
+            appName: 'Xô Fome',
             monthlyFee: 50,
             minWalletBalance: 10,
             minRechargeAmount: 20,
@@ -2612,6 +2722,59 @@ async function runInitialSeeds() {
             console.log('[Init] Juruti status reinforced.');
         }
     }
+
+    // Ensure product categories database matches: delete "GGG" and create/update "Bebidas"
+    try {
+      const categoriesCol = currentDb.collection('categories');
+      
+      // 1. Delete GGG
+      const gggSnap = await categoriesCol.get();
+      for (const catDoc of gggSnap.docs) {
+        const d = catDoc.data();
+        const docName = (d.name || '').trim().toLowerCase();
+        if (docName === 'ggg' || catDoc.id === 'GGG') {
+          console.log(`[Init] Deleting GGG category from DB (ID: ${catDoc.id})...`);
+          await categoriesCol.doc(catDoc.id).delete();
+        }
+      }
+
+      // 2. Ensure "Bebidas" exists
+      const bebidasSnap = await categoriesCol.get();
+      let bebidasExists = false;
+      for (const catDoc of bebidasSnap.docs) {
+        const d = catDoc.data();
+        const docName = (d.name || d.nome || '').trim().toLowerCase();
+        if (docName === 'bebidas') {
+          bebidasExists = true;
+          // Ensure it is active
+          if (d.active !== true || d.status !== 'active') {
+            console.log(`[Init] Activating existing Bebidas category in DB (ID: ${catDoc.id})...`);
+            await categoriesCol.doc(catDoc.id).update({
+              active: true,
+              status: 'active'
+            });
+          }
+        }
+      }
+
+      if (!bebidasExists) {
+        console.log(`[Init] Creating missing Bebidas category in DB...`);
+        const catRef = categoriesCol.doc();
+        await catRef.set({
+          name: 'Bebidas',
+          iconName: 'CupSoda',
+          active: true,
+          status: 'active',
+          order: 10,
+          imageUrl: '',
+          id: catRef.id,
+          _systemKey: SYSTEM_KEY
+        });
+      }
+    } catch (catErr: any) {
+      console.error('[Init] Failed to seed/cleanup categories:', catErr.message);
+    }
+
   } catch (initErr: any) {
     console.error('[Init] Failed to initialize database seeds:', initErr.message);
   }

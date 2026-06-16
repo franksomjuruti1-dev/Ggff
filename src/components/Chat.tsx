@@ -20,6 +20,7 @@ export interface Message {
   orderId: string;
   senderUid: string;
   senderName: string;
+  senderRole?: 'customer' | 'manager' | 'admin' | 'courier';
   senderPhotoUrl?: string;
   text?: string;
   imageUrl?: string;
@@ -31,10 +32,11 @@ export interface Message {
 interface ChatProps {
   orderId: string;
   orderStatus: string;
+  isManagerView?: boolean;
   onClose?: () => void;
 }
 
-const Chat: React.FC<ChatProps> = ({ orderId, orderStatus, onClose }) => {
+const Chat: React.FC<ChatProps> = ({ orderId, orderStatus, isManagerView = false, onClose }) => {
   const { user, profile, managerData, globalSettings } = useAuth();
   const [messages, setMessages] = useState<Message[]>([]);
   const [orderData, setOrderData] = useState<any>(null);
@@ -73,7 +75,8 @@ const Chat: React.FC<ChatProps> = ({ orderId, orderStatus, onClose }) => {
   };
 
   useEffect(() => {
-    if (profile?.role === 'manager') {
+    // Only restrict balance if the user is in the Manager View
+    if (isManagerView && profile?.role === 'manager') {
       const wallet = managerData?.wallet;
       const minBalance = globalSettings?.minWalletBalance ?? 5;
       const isAdmin = profile?.role === 'admin';
@@ -90,9 +93,10 @@ const Chat: React.FC<ChatProps> = ({ orderId, orderStatus, onClose }) => {
         setIsBalanceLow(false);
       }
     } else {
+      // Customers and Admins (in customer view) are never restricted by low balance to send messages
       setIsBalanceLow(false);
     }
-  }, [profile?.role, managerData?.wallet, globalSettings?.minWalletBalance, orderStatus]);
+  }, [profile?.role, managerData?.wallet, globalSettings?.minWalletBalance, orderStatus, isManagerView]);
 
   useEffect(() => {
     if (!orderId) return;
@@ -173,7 +177,10 @@ const Chat: React.FC<ChatProps> = ({ orderId, orderStatus, onClose }) => {
       await addDoc(messagesRef, {
         orderId: orderId,
         senderUid: user.uid,
+        senderId: user.uid,
+        senderType: isManagerView ? 'empresa' : 'cliente',
         senderName: profile?.displayName || 'Usuário',
+        senderRole: isManagerView ? 'manager' : 'customer',
         senderPhotoUrl: photoURL || null,
         text: text?.trim() || null,
         imageUrl: imageUrl || null,
@@ -368,17 +375,32 @@ const Chat: React.FC<ChatProps> = ({ orderId, orderStatus, onClose }) => {
             </div>
           ) : (
             messages.map((msg) => {
-              const isMe = msg.senderUid === user?.uid;
-              // The user wants the viewer (me) on the LEFT and the other person on the RIGHT.
-              const isRight = !isMe;
+              // Priority 1: Use stored senderType
+              // Priority 2: Use senderRole as fallback
+              // Priority 3: Fallback to senderUid comparison (legacy messages)
+              let msgSenderType: 'empresa' | 'cliente' = 'cliente';
+              if (msg.senderType === 'empresa' || msg.senderType === 'cliente') {
+                msgSenderType = msg.senderType;
+              } else if (msg.senderRole) {
+                msgSenderType = msg.senderRole === 'manager' ? 'empresa' : 'cliente';
+              } else {
+                const isCustomer = msg.senderUid === orderData?.customerUid;
+                msgSenderType = isCustomer ? 'cliente' : 'empresa';
+              }
 
-              // Determine live photo
-              const isCustomer = msg.senderUid === orderData?.customerUid;
-              const livePhoto = isCustomer ? customerProfile?.photoURL : restaurantData?.imageUrl;
+              const currentView = isManagerView ? 'empresa' : 'cliente';
+              const isRight = msgSenderType === currentView;
+              const isMe = msg.senderUid === user?.uid;
+
+              // Determine live photo and name
+              const isCustomerMsg = msgSenderType === 'cliente';
+              const livePhoto = isCustomerMsg ? customerProfile?.photoURL : restaurantData?.imageUrl;
               const photoToUse = livePhoto || msg.senderPhotoUrl;
               
-              const liveName = isCustomer ? customerProfile?.displayName : restaurantData?.name;
+              const liveName = isCustomerMsg ? customerProfile?.displayName : restaurantData?.name;
               const nameToUse = liveName || msg.senderName;
+
+              const isEmpresaType = msgSenderType === 'empresa';
 
               return (
                 <div 
@@ -391,33 +413,42 @@ const Chat: React.FC<ChatProps> = ({ orderId, orderStatus, onClose }) => {
                         <img src={photoToUse} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                       ) : (
                         <div className="w-full h-full flex items-center justify-center bg-blue-100 text-blue-600 font-bold text-[10px]">
-                          {nameToUse.charAt(0).toUpperCase()}
+                          {(nameToUse || 'U').charAt(0).toUpperCase()}
                         </div>
                       )}
                     </div>
                     
                     <div className={`flex flex-col ${isRight ? 'items-end' : 'items-start'}`}>
                       <span className="text-[8px] text-slate-400 font-black uppercase tracking-widest mb-1 px-1">
-                        {isMe ? 'Você' : nameToUse}
+                        {isMe ? 'Você' : nameToUse || 'Usuário'}
                       </span>
-                      <div className={`px-4 py-3 rounded-2xl text-xs font-medium shadow-sm space-y-2 ${
-                        isRight 
-                          ? 'bg-white text-slate-700 rounded-tr-none border border-slate-100' 
-                          : 'bg-blue-600 text-white rounded-tl-none'
+                      <div className={`px-4 py-3 rounded-2xl text-xs font-medium [overflow-wrap:anywhere] shadow-sm space-y-2 ${
+                        isEmpresaType 
+                          ? `bg-blue-600 text-white rounded-2xl ${isRight ? 'rounded-tr-none' : 'rounded-tl-none'}` 
+                          : `bg-white text-slate-700 dark:bg-slate-800 dark:text-slate-100 border border-slate-100 dark:border-slate-700 rounded-2xl ${isRight ? 'rounded-tr-none' : 'rounded-tl-none'}`
                       }`}>
                         {msg.text && <p className="whitespace-pre-wrap">{msg.text}</p>}
                         {msg.pixInfo && (
-                          <div className={`mt-2 p-3 rounded-xl border flex items-center justify-between gap-3 ${isRight ? 'bg-slate-50 border-slate-200' : 'bg-blue-700/50 border-blue-400/30'}`}>
+                          <div className={`mt-2 p-3 rounded-xl border flex items-center justify-between gap-3 ${
+                            isEmpresaType 
+                              ? 'bg-blue-700/50 border-blue-400/30' 
+                              : 'bg-slate-100 dark:bg-slate-900 border-slate-200 dark:border-slate-800'
+                          }`}>
                             <div className="flex-1 min-w-0">
                               <p className="text-[8px] font-black uppercase tracking-widest opacity-60 mb-0.5">Chave Pix</p>
                               <p className="font-mono text-[10px] break-all">{msg.pixInfo.key}</p>
                             </div>
                             <button 
+                              type="button"
                               onClick={() => {
                                 navigator.clipboard.writeText(msg.pixInfo!.key);
                                 alert('copiado com sucesso vai a seu banco e pague');
                               }}
-                              className={`p-2 rounded-lg transition-all ${isRight ? 'bg-white hover:bg-slate-100 text-blue-600' : 'bg-blue-500 hover:bg-blue-400 text-white'}`}
+                              className={`p-2 rounded-lg transition-all ${
+                                isEmpresaType 
+                                  ? 'bg-blue-500 hover:bg-blue-400 text-white' 
+                                  : 'bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 text-slate-800 dark:text-slate-200'
+                              }`}
                               title="Copiar Chave"
                             >
                               <Copy size={14} />
@@ -439,7 +470,9 @@ const Chat: React.FC<ChatProps> = ({ orderId, orderStatus, onClose }) => {
                         )}
                         {msg.location && (
                           <div className="space-y-2">
-                            <div className="flex items-center space-x-2 bg-white/10 p-2 rounded-xl">
+                            <div className={`flex items-center space-x-2 p-2 rounded-xl ${
+                              isEmpresaType ? 'bg-white/10 text-white' : 'bg-slate-100 dark:bg-slate-900 text-slate-800 dark:text-slate-200'
+                            }`}>
                               <MapPin size={16} />
                               <span className="text-[10px] font-bold uppercase tracking-widest">Localização em Tempo Real</span>
                             </div>
@@ -448,9 +481,9 @@ const Chat: React.FC<ChatProps> = ({ orderId, orderStatus, onClose }) => {
                               target="_blank"
                               rel="noopener noreferrer"
                               className={`flex items-center justify-center space-x-2 w-full py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                                isRight 
-                                  ? 'bg-blue-600 text-white' 
-                                  : 'bg-white text-blue-600'
+                                isEmpresaType 
+                                  ? 'bg-white text-blue-600 hover:bg-white/95' 
+                                  : 'bg-blue-600 text-white hover:bg-blue-700'
                               }`}
                             >
                               <Play size={12} />
@@ -458,6 +491,7 @@ const Chat: React.FC<ChatProps> = ({ orderId, orderStatus, onClose }) => {
                             </a>
                             {profile?.role === 'manager' && (
                               <button 
+                                type="button"
                                 onClick={() => {
                                   const url = `https://www.openstreetmap.org/?mlat=${msg.location?.latitude}&mlon=${msg.location?.longitude}#map=18/${msg.location?.latitude}/${msg.location?.longitude}`;
                                   if (navigator.share) {
@@ -472,9 +506,9 @@ const Chat: React.FC<ChatProps> = ({ orderId, orderStatus, onClose }) => {
                                   }
                                 }}
                                 className={`flex items-center justify-center space-x-2 w-full py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border ${
-                                  isRight 
-                                    ? 'border-blue-100 hover:bg-blue-50' 
-                                    : 'border-white/20 hover:bg-white/10'
+                                  isEmpresaType 
+                                    ? 'border-white/20 hover:bg-white/10 text-white' 
+                                    : 'border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-705 dark:text-slate-300'
                                 }`}
                               >
                                 <Share2 size={12} />

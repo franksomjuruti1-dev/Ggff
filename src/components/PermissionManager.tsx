@@ -117,7 +117,8 @@ export const PermissionManager: React.FC = () => {
     if (geo) {
       if (geo.status === 'denied') {
         setActivePermission(geo);
-        setIsVisible(true);
+        // User requested to remove the blocking popup for denied permissions
+        setIsVisible(false);
       } else if (geo.status === 'granted') {
         // Just ensures we don't block if it was granted via system prompt
         if (activePermission?.type === 'geolocation') {
@@ -142,7 +143,8 @@ export const PermissionManager: React.FC = () => {
         const geo = permissions.find(p => p.type === 'geolocation');
         if (geo) {
           setActivePermission({ ...geo, status: 'denied' });
-          setIsVisible(true);
+          // User requested to remove the blocking popup for denied permissions
+          setIsVisible(false);
         }
       } else if (error.code === 3) { // TIMEOUT
         // On timeout, we might want to let the user try again manually
@@ -260,6 +262,12 @@ export const PermissionManager: React.FC = () => {
                     Recarregar App
                     <RefreshCw className="w-5 h-5" />
                   </button>
+                  <button
+                    onClick={() => setIsVisible(false)}
+                    className="w-full py-4 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 text-[10px] font-black uppercase tracking-widest transition-colors italic"
+                  >
+                    Ignorar e continuar sem localização
+                  </button>
                   <p className="text-center text-[9px] text-zinc-400 font-bold uppercase tracking-widest leading-none">
                     Configuração detectada automaticamente após recarregar
                   </p>
@@ -275,14 +283,12 @@ export const PermissionManager: React.FC = () => {
                   <CheckCircle2 className="w-5 h-5" />
                 </button>
                 
-                {activePermission.type !== 'geolocation' && (
-                  <button
-                    onClick={() => setIsVisible(false)}
-                    className="w-full py-4 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 text-xs font-black uppercase tracking-widest transition-colors italic"
-                  >
-                    Ignorar por enquanto
-                  </button>
-                )}
+                <button
+                  onClick={() => setIsVisible(false)}
+                  className="w-full py-4 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 text-xs font-black uppercase tracking-widest transition-colors italic"
+                >
+                  Continuar sem {activePermission.type === 'geolocation' ? 'localização' : 'permissão'}
+                </button>
               </div>
             )}
 

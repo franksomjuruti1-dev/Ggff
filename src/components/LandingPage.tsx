@@ -14,7 +14,7 @@ interface LandingPageProps {
 const LandingPage: React.FC<LandingPageProps> = ({ onTriggerSplash, splashTriggered }) => {
   const { profile, loading, user, globalSettings, isSigningIn, prefetchManagerData, prefetchAdminData } = useAuth();
   const navigate = useNavigate();
-  const [locationInfo, setLocationInfo] = useState<string>('Buscando localização...');
+  const [locationInfo, setLocationInfo] = useState<string>('Porto Velho');
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
@@ -83,8 +83,21 @@ const LandingPage: React.FC<LandingPageProps> = ({ onTriggerSplash, splashTrigge
       }
     };
 
-    const getPosition = () => {
+    const getPosition = async () => {
       if ("geolocation" in navigator) {
+        // Check permission status first to avoid blocking popups automatically
+        if ((navigator as any).permissions) {
+          try {
+            const status = await (navigator as any).permissions.query({ name: 'geolocation' });
+            if (status.state === 'prompt' || status.state === 'denied') {
+               console.log("[LandingPage] Geolocation not pre-granted, skipping auto-request");
+               return;
+            }
+          } catch (e) {
+            console.warn("[LandingPage] Error querying permission status:", e);
+          }
+        }
+
         console.log("[LandingPage] Requesting geolocation...");
         navigator.geolocation.getCurrentPosition(
           (position) => {
@@ -102,22 +115,17 @@ const LandingPage: React.FC<LandingPageProps> = ({ onTriggerSplash, splashTrigge
                   fetchAddress(latitude, longitude);
                 },
                 (err2) => {
-                  let msg = 'Erro de localização';
-                  if (err2.code === err2.PERMISSION_DENIED) msg = 'Permissão negada';
-                  setLocationInfo(msg);
+                  console.error("[LandingPage] Geolocation retry failed:", err2);
+                  // Fail silently, use Porto Velho as default
                 },
-                { enableHighAccuracy: false, timeout: 15000, maximumAge: 30000 }
+                { enableHighAccuracy: false, timeout: 10000, maximumAge: 30000 }
               );
             } else {
-              let msg = 'Permissão negada';
-              if (error.code === error.POSITION_UNAVAILABLE) msg = 'Local indisponível';
-              setLocationInfo(msg);
+              console.warn("[LandingPage] Manual location will be used as fallback");
             }
           },
-          { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+          { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
         );
-      } else {
-        setLocationInfo('GPS não suportado');
       }
     };
 
