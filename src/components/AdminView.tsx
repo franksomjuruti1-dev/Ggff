@@ -2019,7 +2019,7 @@ const AdminView: React.FC = () => {
     try {
       await addDoc(collection(db, 'business_categories'), {
         name: busCatName,
-        imageUrl: busCatImageUrl || 'https://picsum.photos/seed/category/200/200',
+        imageUrl: busCatImageUrl || '',
         status: busCatStatus,
         active: busCatStatus === 'active',
         order: businessCategories.length,

@@ -6558,7 +6558,9 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                               <div className={`w-16 h-16 md:w-20 md:h-20 rounded-full flex items-center justify-center transition-all duration-300 overflow-hidden ${activeCategory === cat.name ? 'bg-blue-gradient text-white shadow-xl shadow-blue-500/30' : 'bg-white dark:bg-slate-800 text-slate-950 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-100 dark:border-slate-700'}`}>
                                 {cat.imageUrl ? (
                                   <img src={cat.imageUrl || undefined} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                                ) : null}
+                                ) : (
+                                  renderCategoryIcon(cat.iconName || 'Utensils', 28, "w-7 h-7 md:w-8 md:h-8 text-current")
+                                )}
                               </div>
                               <div className="flex flex-col items-center">
                                 <span className="text-[10px] md:text-xs font-extrabold uppercase tracking-widest text-slate-950 dark:text-slate-950 opacity-100">{cat.name}</span>
@@ -8950,7 +8952,11 @@ const CustomerView: React.FC<CustomerViewProps> = ({ adminMode, forcedCityId, fe
                         >
                           {cat.imageUrl ? (
                             <img src={cat.imageUrl || undefined} className="w-12 h-12 object-cover rounded-xl" referrerPolicy="no-referrer" />
-                          ) : null}
+                          ) : (
+                            <div className="w-12 h-12 flex items-center justify-center bg-white/10 dark:bg-slate-800/50 rounded-xl text-current">
+                              {renderCategoryIcon(cat.iconName || 'Utensils', 20)}
+                            </div>
+                          )}
                           <div className="flex flex-col items-center">
                             <span className="text-[10px] font-extrabold uppercase tracking-widest text-center text-slate-950 dark:text-slate-950 opacity-100">{cat.name}</span>
                             {Array.isArray(activeSchedulesMemo) && activeSchedulesMemo.filter(s => s && Array.isArray(s.categoryIds) && s.categoryIds.includes(cat.id)).map(schedule => (

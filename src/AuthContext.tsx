@@ -635,21 +635,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
             // --- 5. ENRICH/UPDATE GLOBAL STATES & LOCAL CACHING
             if (finalData) {
-              const formattedCommon = {
-                restaurants: finalData.restaurants || [],
-                banners: finalData.banners || [],
-                categories: finalData.categories || [],
-                cities: finalData.cities || [],
-                foodItems: finalData.foodItems || [],
-                isLoaded: true
-              };
+              setCommonData(prev => {
+                const liveCategories = prev.categories && prev.categories.length > 0 ? prev.categories : (finalData.categories || []);
+                const formattedCommon = {
+                  restaurants: finalData.restaurants || [],
+                  banners: finalData.banners || [],
+                  categories: liveCategories,
+                  cities: finalData.cities || [],
+                  foodItems: finalData.foodItems || [],
+                  isLoaded: true
+                };
+                localStorage.setItem('common_data_cache', JSON.stringify(formattedCommon));
+                return formattedCommon;
+              });
 
-              setCommonData(formattedCommon);
               setAdminData(prev => ({
                 ...prev,
                 restaurants: finalData.restaurants || [],
                 banners: finalData.banners || [],
-                categories: finalData.categories || [],
+                categories: prev.categories && prev.categories.length > 0 ? prev.categories : (finalData.categories || []),
                 cities: finalData.cities || []
               }));
 
@@ -658,7 +662,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 localStorage.setItem('global_settings_cache', JSON.stringify(finalData.configuracoes));
               }
 
-              localStorage.setItem('common_data_cache', JSON.stringify(formattedCommon));
               console.log('[SWR Real-time Update] Global states and local storage common_data_cache successfully synchronized.');
             }
           } catch (snapshotErr) {
@@ -673,10 +676,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const unsubCategories = onSnapshot(collection(db, 'categories'), (categoriesSnap) => {
           const rawCategories = categoriesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
           console.log('[AuthContext] Categories synchronized in Real-time from Firestore:', rawCategories.length);
-          setCommonData(prev => ({
-            ...prev,
-            categories: rawCategories
-          }));
+          setCommonData(prev => {
+            const formatted = {
+              ...prev,
+              categories: rawCategories
+            };
+            localStorage.setItem('common_data_cache', JSON.stringify(formatted));
+            return formatted;
+          });
           setAdminData(prev => ({
             ...prev,
             categories: rawCategories
